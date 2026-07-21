@@ -31,3 +31,9 @@ Registro de errores/divergencias durante F3 y sus fixes. Protege futuras HUs Sol
 - **Causa raíz**: dos txs con mismos ix-data + accounts + signers + recentBlockhash → misma firma → bankrun las deduplica por firma sin re-ejecutar.
 - **Fix**: hacer distinta la tx de reintento. Test 6: segundo `deposit` con `deadline+1n` (mismas seeds, otro ix-data → colisiona en `init` = "already in use"). Test 5a: `bumpSlot()` (`context.warpToSlot(slot+1)`) antes del reintento → blockhash fresco → firma distinta → ejecuta y tira `EscrowNotDeposited`. Verificado determinístico (3 corridas 9/9).
 - **Aplicar en**: cualquier test bankrun que reintente una operación de misma forma → variar ix-data o avanzar slot para evitar el dedup por firma.
+
+### [2026-07-21] Fix-pack — toolchain real del proyecto es rustc 1.89.0 (no 1.97.1 del SDD §3)
+- **Error**: el SDD §3 asumía rustc 1.97.1 como toolchain del proyecto; el scaffold real quedó pineado en 1.89.0.
+- **Causa raíz**: `anchor init` (anchor-cli 1.1.2) pineó el proyecto en **rustc 1.89.0** vía `rust-toolchain.toml` (`channel = "1.89.0"`) y `Cargo.toml` (`rust-version = "1.89.0"`). El build/test es verde en 1.89.0.
+- **Fix**: se ADOPTA 1.89.0 como el pin real del proyecto (no se fuerza el 1.97.1 asumido por el SDD). El CI se alineó a usar ese canal pineado (`dtolnay/rust-toolchain@1.89.0` en vez de `@stable`) para builds reproducibles pre-auditoría; queda in-sync con `rust-toolchain.toml`.
+- **Aplicar en**: futuras HUs Anchor → tomar el toolchain que pinea el scaffold (`rust-toolchain.toml`/`rust-version`) como fuente de verdad, no el asumido por el SDD; el CI debe pinear ese mismo canal, no `@stable`.

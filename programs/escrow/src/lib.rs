@@ -16,6 +16,10 @@ pub mod escrow {
         amount: u64,
         deadline: i64,
     ) -> Result<()> {
+        // `remittance_id` lo consume el `#[instruction(remittance_id)]` del Context (seeds del PDA);
+        // el cuerpo no lo usa. Referencia no-op para silenciar el warning sin romper las seeds.
+        let _ = &remittance_id;
+
         // 1. CHECKS
         require!(amount > 0, ErrorCode::ZeroAmount);
         require!(
@@ -185,8 +189,6 @@ pub enum ErrorCode {
     DeadlineNotReached,
     #[msg("Escrow must be in a terminal state to close")]
     EscrowNotTerminal,
-    #[msg("Arithmetic overflow")]
-    Overflow,
 }
 
 // ---------------------------------------------------------------------------

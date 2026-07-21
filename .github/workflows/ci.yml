@@ -17,9 +17,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # rustc/cargo — rust-toolchain.toml pins the exact channel; rustup honors it.
+      # rustc/cargo — pinned to the exact channel of rust-toolchain.toml (1.89.0,
+      # the version anchor-cli 1.1.2 pinned the project on) for reproducible,
+      # audit-ready builds. Must stay in sync with rust-toolchain.toml.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.89.0
         with:
           components: rustfmt, clippy
 
