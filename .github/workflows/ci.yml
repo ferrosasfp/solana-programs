@@ -1,0 +1,58 @@
+name: escrow-ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    env:
+      # Pinned toolchain (matches the versions used in F3 development).
+      SOLANA_VERSION: "3.1.10"
+      ANCHOR_VERSION: "1.1.2"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # rustc/cargo — rust-toolchain.toml pins the exact channel; rustup honors it.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Solana / Agave CLI (provides cargo build-sbf + the SBF platform-tools).
+      - name: Install Solana (Agave)
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v${SOLANA_VERSION}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Solana version
+        run: solana --version
+
+      # Anchor via avm, pinned to the project version.
+      - name: Install Anchor (avm)
+        run: |
+          cargo install --git https://github.com/coral-xyz/anchor avm --force
+          avm install ${ANCHOR_VERSION}
+          avm use ${ANCHOR_VERSION}
+          anchor --version
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Anchor build
+        run: anchor build
+
+      # bankrun is self-contained (no local validator / no cluster).
+      # --skip-deploy prevents any devnet deploy (CD-5: deploy is devnet-only and
+      # gated to scripts/deploy-devnet.sh, never CI).
+      - name: Anchor test
+        run: anchor test --skip-build --skip-deploy --skip-local-validator
