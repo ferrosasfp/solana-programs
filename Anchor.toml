@@ -12,10 +12,10 @@ skip-lint = false
 # target/deploy/escrow.so for the in-process test validator. It does NOT change the
 # deploy cluster (the deploy script pins --provider.cluster devnet).
 [programs.localnet]
-escrow = "BBQ9TcriBT7tqe5czR72CkUyxYg6z8pH7nk161yh79WA"
+escrow = "DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x"
 
 [programs.devnet]
-escrow = "BBQ9TcriBT7tqe5czR72CkUyxYg6z8pH7nk161yh79WA"
+escrow = "DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x"
 
 [provider]
 cluster = "devnet"
