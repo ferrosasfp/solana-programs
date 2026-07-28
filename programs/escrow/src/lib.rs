@@ -147,6 +147,61 @@ pub mod escrow {
         // escrow_state se cierra automáticamente por el constraint `close = sender` del Context.
         Ok(())
     }
+
+    /// HU-SOL-20/AC-3: registra el id16 de un escrow ABIERTO del sender en su EscrowIndex, para que
+    /// pueda redescubrirlo on-chain sin conocer el remittanceId original. NO mueve ni un token: no
+    /// hay ninguna CPI de SPL acá; la única transferencia es el rent del índice que el macro `init`
+    /// genera del sender hacia su propia cuenta.
+    pub fn register_escrow(ctx: Context<RegisterEscrow>, remittance_id: [u8; 16]) -> Result<()> {
+        // 1. CHECKS
+        let index = &mut ctx.accounts.escrow_index;
+        require!(index.entries.len() < MAX_ENTRIES, ErrorCode::EscrowIndexFull);
+
+        // 2. EFFECTS — escrituras IDEMPOTENTES del header (CD-9): `sender` y `bump` están fijados
+        // por las seeds y `version` es una constante ⇒ re-ejecutar esto no puede resetear nada.
+        index.sender = ctx.accounts.sender.key();
+        index.version = ESCROW_INDEX_VERSION;
+        index.bump = ctx.bumps.escrow_index;
+        // Idempotente por diseño: un retry NO tumba la tx ni duplica la entrada.
+        if !index.entries.contains(&remittance_id) {
+            index.entries.push(remittance_id);
+        }
+        Ok(())
+    }
+
+    /// HU-SOL-20: quita un id16 del índice del propio sender. Idempotente (no-op si no está), no
+    /// mueve fondos, y NO exige que el escrow esté en estado terminal — a propósito: exigirlo
+    /// obligaría a cargar Account<EscrowState>, que falla con AccountNotInitialized (3012) si el
+    /// escrow ya fue cerrado, y entonces esas entradas quedarían imposibles de limpiar (fuga del
+    /// índice hasta el cap). Se prefiere la operación que no puede quedar trabada.
+    pub fn deregister_escrow(
+        ctx: Context<DeregisterEscrow>,
+        remittance_id: [u8; 16],
+    ) -> Result<()> {
+        ctx.accounts.escrow_index.entries.retain(|e| *e != remittance_id);
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Índice enumerable por sender (HU-SOL-20)
+// ---------------------------------------------------------------------------
+
+/// Máximo de escrows ABIERTOS indexables por sender. El índice solo lista escrows en estado
+/// Deposited (ver RegisterEscrow), y el ciclo de vida de un escrow es de minutos/horas ⇒ 32 es
+/// ~16-32x el uso real esperado. Subirlo a futuro es OTRA HU (CD-11).
+pub const MAX_ENTRIES: usize = 32;
+/// Versión del layout de EscrowIndex (forward-compat). Hoy 1.
+pub const ESCROW_INDEX_VERSION: u8 = 1;
+
+#[account]
+#[derive(InitSpace)]
+pub struct EscrowIndex {
+    pub sender: Pubkey,         // 32 — redundante con las seeds; habilita memcmp como fallback
+    pub version: u8,            //  1 — forward-compat del layout del índice
+    pub bump: u8,               //  1 — bump canónico del PDA
+    #[max_len(MAX_ENTRIES)]
+    pub entries: Vec<[u8; 16]>, //  4 + 16·32 = 516 — id16 de los escrows ABIERTOS del sender
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +244,11 @@ pub enum ErrorCode {
     DeadlineNotReached,
     #[msg("Escrow must be in a terminal state to close")]
     EscrowNotTerminal,
+    // Al FINAL a propósito: los códigos de error de Anchor son posicionales desde 6000. Insertarlo
+    // en el medio renumeraría EscrowNotDeposited/DeadlineNotReached/EscrowNotTerminal y rompería a
+    // cualquier cliente que mapee códigos. Debe quedar 6005.
+    #[msg("Escrow index is full for this sender")]
+    EscrowIndexFull,
 }
 
 // ---------------------------------------------------------------------------
@@ -336,4 +396,48 @@ pub struct Close<'info> {
     pub vault: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+#[instruction(remittance_id: [u8; 16])]
+pub struct RegisterEscrow<'info> {
+    #[account(mut)]
+    pub sender: Signer<'info>,
+
+    // NO `mut`: register_escrow no modifica el escrow. Las seeds (que incluyen al signer) son el
+    // guard REAL de ownership; `has_one` es defensa en profundidad, espejo de Refund.
+    #[account(
+        seeds = [b"escrow", sender.key().as_ref(), remittance_id.as_ref()],
+        bump = escrow_state.bump,
+        has_one = sender,
+        constraint = escrow_state.status == EscrowStatus::Deposited @ ErrorCode::EscrowNotDeposited
+    )]
+    pub escrow_state: Account<'info, EscrowState>,
+
+    // Sin `mut` (el macro `init_if_needed` ya lo implica; agregarlo NO compila) y sin
+    // `has_one = sender` (CD-8: en la rama de creación el campo todavía vale Pubkey::default()).
+    // Las seeds ["escrow-index", sender] + Signer ya son el guard criptográfico.
+    #[account(
+        init_if_needed,
+        payer = sender,
+        space = 8 + EscrowIndex::INIT_SPACE,
+        seeds = [b"escrow-index", sender.key().as_ref()],
+        bump
+    )]
+    pub escrow_index: Account<'info, EscrowIndex>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct DeregisterEscrow<'info> {
+    // SIN `mut`: no paga rent y no se le transfiere nada. Menos privilegio que en RegisterEscrow.
+    pub sender: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"escrow-index", sender.key().as_ref()],
+        bump = escrow_index.bump
+    )]
+    pub escrow_index: Account<'info, EscrowIndex>,
 }

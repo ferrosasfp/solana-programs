@@ -254,6 +254,23 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
     nowTs = (await context.banksClient.getClock()).unixTimestamp;
   });
 
+  // ---- T1a: CANARY — escrow_state is EXACTLY 154 bytes (AC-6 / CD-7) -------
+  //
+  // 8 (discriminator) + EscrowState::INIT_SPACE (32*4 + 8 + 8 + 1 + 1 = 146) = 154, no padding.
+  // Adding ANY field to EscrowState keeps the discriminator identical (it hashes only the struct
+  // NAME) but makes borsh deserialization of every already-live 154-byte account fail with
+  // UnexpectedEof => AccountDidNotDeserialize (3003) on release/refund/close. That would brick
+  // exactly the escrows that hold funds today — a fix for "unreachable funds" that makes funds
+  // unreachable. DO NOT delete this test, do not relax it, do not turn it into a range assertion.
+  it("1a. CANARY: a deposit produces an escrow_state of EXACTLY 154 bytes (AC-6/CD-7)", async () => {
+    const id = rid(11);
+    const { escrowState } = await deposit(id, DEPOSIT_AMOUNT, nowTs + 1000n);
+
+    const acc = await context.banksClient.getAccount(escrowState);
+    assert.isNotNull(acc, "escrow_state must exist after deposit");
+    expect(acc!.data.length).to.equal(154);
+  });
+
   // ---- Test 1: happy path deposit -> release (AC-1, AC-2, AC-9) ------------
 
   it("1. deposit then release pays exactly the recorded beneficiary; vault drained; status Released", async () => {
