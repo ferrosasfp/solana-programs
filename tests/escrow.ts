@@ -262,6 +262,17 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
   // UnexpectedEof => AccountDidNotDeserialize (3003) on release/refund/close. That would brick
   // exactly the escrows that hold funds today — a fix for "unreachable funds" that makes funds
   // unreachable. DO NOT delete this test, do not relax it, do not turn it into a range assertion.
+  //
+  // ⚠️ IF YOU MUTATE EscrowState TO PROVE THIS CANARY FAILS (good practice — please do), READ THIS:
+  // the mutation contaminates target/ (.so + IDL + types), and target/ is gitignored, so restoring
+  // lib.rs leaves `git status` clean while the MUTANT .so stays on disk. `anchor deploy` does not
+  // compile: it ships whatever is in target/deploy/. It happened on 2026-07-27 and it almost
+  // deployed the mutant to devnet. After reverting the source you MUST rebuild and re-verify the
+  // ARTIFACT, not the source:
+  //   touch programs/escrow/src/lib.rs && anchor build
+  //   anchor test --skip-build --skip-deploy --skip-local-validator     # this test loads that .so
+  // Full procedure (with the IDL/.so checks): doc/sdd/002-escrow-remittance-id-recovery/
+  // runbook-R1-deploy-devnet.md, step 0.
   it("1a. CANARY: a deposit produces an escrow_state of EXACTLY 154 bytes (AC-6/CD-7)", async () => {
     const id = rid(11);
     const { escrowState } = await deposit(id, DEPOSIT_AMOUNT, nowTs + 1000n);
