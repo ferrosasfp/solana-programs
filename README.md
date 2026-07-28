@@ -34,8 +34,39 @@ by the PDA, PDA-signed CPI transfers).
    - `refund(remittance_id)` — after `deadline`, the `sender` alone recovers the funds. No
      dependency on the `authority` signing or being available.
 3. `close(remittance_id)` — once in a terminal state, rent for `escrow_state` and the vault is
-   returned to `sender`. `init` (never `init_if_needed`) means the seeds are only reusable via a
-   fresh, clean deposit (no revival of stale state).
+   returned to `sender`. `escrow_state` and the vault are created with plain `init` (**never**
+   `init_if_needed`), so those seeds are only reusable via a fresh, clean deposit (no revival of
+   stale state).
+
+### Recovering an escrow whose `remittanceId` was lost (HU-SOL-20)
+
+`escrow_state` is derived from `["escrow", sender, remittance_id16]` and those 16 bytes are **not
+stored in the account**. Losing them used to make the funds unreachable even for the `sender`.
+Two instructions add an enumerable per-sender index so the id can be read back from the chain:
+
+4. `register_escrow(remittance_id)` — records `remittance_id` in `EscrowIndex`, a PDA derived from
+   `["escrow-index", sender]`, i.e. derivable knowing **only the sender's own address**. Requires
+   the escrow to exist, to belong to the signing `sender` (seeds) and to still be `Deposited`, so
+   the index only ever lists **open** escrows. Moves **zero** tokens. Idempotent: re-registering the
+   same id neither duplicates nor reverts. Capped at `MAX_ENTRIES = 32`; the 33rd reverts with
+   `EscrowIndexFull` (6005).
+5. `deregister_escrow(remittance_id)` — removes one id from the caller's own index. Idempotent
+   no-op if absent, moves no tokens, and deliberately does **not** require a terminal state (that
+   would make entries of already-closed escrows impossible to clean up).
+
+Recovery path: derive `["escrow-index", sender]`, one `getAccountInfo`, read `entries`, then derive
+`["escrow", sender, entries[i]]` and call the existing `refund`. The `authority`/arbiter is **not**
+a party to either new instruction and gains no power over the funds.
+
+`EscrowIndex` is the **only** account created with `init_if_needed`. It is safe against
+re-initialization because it custodies no funds, its seeds bind it to the signing `sender`, and
+every header write in the handler is idempotent — nothing ever resets `entries`.
+
+> **`EscrowState` is deliberately never modified.** Live accounts are exactly **154 bytes**; adding
+> a field would keep the discriminator (it hashes only the struct *name*) but break borsh
+> deserialization of every existing account, bricking `release`/`refund`/`close` with
+> `AccountDidNotDeserialize` (3003) — i.e. it would make reachable funds unreachable. Test `1a` in
+> `tests/escrow.ts` is a permanent canary on that 154-byte size: **do not delete or relax it.**
 
 ## Toolchain
 
