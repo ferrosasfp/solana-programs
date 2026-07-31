@@ -17,13 +17,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # rustc/cargo — pinned to the exact channel of rust-toolchain.toml (1.89.0,
+      # rustc/cargo, pinned to the exact channel of rust-toolchain.toml (1.89.0,
       # the version anchor-cli 1.1.2 pinned the project on) for reproducible,
       # audit-ready builds. Must stay in sync with rust-toolchain.toml.
-      - name: Install Rust
+      - name: Install Rust (program toolchain)
         uses: dtolnay/rust-toolchain@1.89.0
         with:
           components: rustfmt, clippy
+
+      # A second, modern host toolchain used ONLY to build the Anchor CLI binary.
+      # anchor-cli 1.1.2 pulls cargo-platform 0.3.3, whose minimum supported rustc
+      # is above 1.89.0, so building the tool with the program's pinned channel
+      # fails before the program is ever compiled. The program itself is still
+      # built with 1.89.0: rust-toolchain.toml applies inside the checkout.
+      - name: Install Rust (host toolchain for the CLI)
+        uses: dtolnay/rust-toolchain@stable
 
       # Solana / Agave CLI (provides cargo build-sbf + the SBF platform-tools).
       - name: Install Solana (Agave)
@@ -34,12 +42,15 @@ jobs:
       - name: Solana version
         run: solana --version
 
-      # Anchor via avm, pinned to the project version.
-      - name: Install Anchor (avm)
+      # Anchor CLI from crates.io at the exact project version, with --locked so the
+      # tool's own dependency graph cannot drift under us. This replaces the previous
+      # `cargo install --git ... avm` step, which built avm from the repository's
+      # moving HEAD and broke as soon as an unrelated transitive dependency raised
+      # its minimum rustc. `+stable` overrides rust-toolchain.toml for this command
+      # only (see the toolchain steps above).
+      - name: Install Anchor CLI
         run: |
-          cargo install --git https://github.com/coral-xyz/anchor avm --force
-          avm install ${ANCHOR_VERSION}
-          avm use ${ANCHOR_VERSION}
+          cargo +stable install anchor-cli --version ${ANCHOR_VERSION} --locked
           anchor --version
 
       - name: Setup Node

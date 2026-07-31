@@ -6,3 +6,9 @@ node_modules
 test-ledger
 .yarn
 .surfpool
+
+# never commit local secrets or keypairs
+.env
+.env.*
+*.pem
+**/*keypair*.json
