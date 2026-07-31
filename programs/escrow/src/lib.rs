@@ -109,8 +109,17 @@ pub mod escrow {
     pub fn release(ctx: Context<Release>, remittance_id: [u8; 16]) -> Result<()> {
         // 1. CHECKS
         require!(
-            ctx.accounts.escrow_state.status == EscrowStatus::Deposited,
+            ctx.accounts.escrow_state.status.is_open(),
             ErrorCode::EscrowNotDeposited
+        );
+        // LA guarda que faltaba. Sin esto, "pasado el plazo recuperás tu plata" es falso: el
+        // release seguía siendo legal para siempre, así que el sender que va a refundear no ejerce
+        // un derecho, entra en una carrera contra alguien que puede reintentar indefinidamente.
+        // El orden importa: el chequeo de estado va PRIMERO para que un segundo release sobre un
+        // escrow ya terminal siga reportando EscrowNotDeposited y no la ventana.
+        require!(
+            Clock::get()?.unix_timestamp < ctx.accounts.escrow_state.deadline,
+            ErrorCode::ReleaseWindowClosed
         );
 
         // 2. EFFECTS (ANTES de la CPI — CEI / AC-2)
@@ -142,8 +151,13 @@ pub mod escrow {
 
     pub fn refund(ctx: Context<Refund>, remittance_id: [u8; 16]) -> Result<()> {
         // 1. CHECKS
+        // Acepta los DOS estados abiertos: si el refund sólo aceptara `Deposited`, un escrow
+        // congelado por `begin_payout` cuya pata fiat nunca vuelve dejaría la plata atrapada, que
+        // es justo lo contrario de lo que este cambio promete. El código de error se mantiene en
+        // EscrowNotDeposited (y no uno nuevo) para no romperle el mapeo a los consumidores que ya
+        // lo leen hoy.
         require!(
-            ctx.accounts.escrow_state.status == EscrowStatus::Deposited,
+            ctx.accounts.escrow_state.status.is_open(),
             ErrorCode::EscrowNotDeposited
         );
         require!(
@@ -281,6 +295,31 @@ pub enum EscrowStatus {
     Deposited, // 0
     Released,  // 1 — terminal
     Refunded,  // 2 — terminal
+    // APENDIZADA AL FINAL, y esto no es estilo. Los discriminantes 0, 1 y 2 están escritos en
+    // cuentas VIVAS: insertar una variante en el medio le cambiaría el significado a bytes que ya
+    // existen y un escrow Released se leería como otra cosa. Además `InitSpace` de un enum en
+    // Anchor es 1 byte más el máximo de las variantes, y como ésta es unitaria el tamaño de
+    // EscrowState no se mueve: sigue en 154 bytes. El canario de tests/escrow.ts lo verifica.
+    PayoutPending, // 3 — NO terminal: hay fondos y siguen siendo recuperables por el sender
+}
+
+impl EscrowStatus {
+    /// Estados ABIERTOS: el escrow tiene fondos y todavía puede ir a un terminal.
+    ///
+    /// Que `release` y `refund` compartan este conjunto no los vuelve intercambiables: lo que los
+    /// separa es el RELOJ, no el estado. `release` sólo entra con `now < deadline` y `refund` sólo
+    /// con `now >= deadline`, así que para todo instante a lo sumo uno de los dos es legal.
+    pub fn is_open(&self) -> bool {
+        matches!(self, EscrowStatus::Deposited | EscrowStatus::PayoutPending)
+    }
+
+    /// Estados TERMINALES: la plata ya salió del vault y la cuenta se puede cerrar.
+    ///
+    /// Lista blanca a propósito, no `!= Deposited`. Con una variante no-terminal nueva, la negación
+    /// dejaría cerrar un `PayoutPending` con el vault lleno.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, EscrowStatus::Released | EscrowStatus::Refunded)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +351,8 @@ pub enum ErrorCode {
     DeadlineTooSoon,
     #[msg("Deadline is above the maximum custody window")]
     DeadlineTooFar,
+    #[msg("The release window is closed: the deadline has been reached")]
+    ReleaseWindowClosed,
 }
 
 // ---------------------------------------------------------------------------

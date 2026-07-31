@@ -391,4 +391,119 @@ describe("escrow-window — the custody window and the payout freeze", () => {
       "DeadlineTooFar"
     );
   });
+
+  // =========================================================================
+  // B. THE INVARIANT, attacked at both edges
+  //
+  //   For every escrow account and every instant t, AT MOST ONE of `release`
+  //   and `refund` can succeed.
+  //
+  // How to refute it: exhibit an instant and a state where both get in. These
+  // tests try exactly that at t = deadline - 1 and t = deadline, which is where
+  // a `<` written as a `<=` would show up.
+  // =========================================================================
+
+  it("B1. at t = deadline - 1 only release is legal: the refund reverts (DeadlineNotReached)", async () => {
+    const deadline = nowTs + FIXTURE_TTL;
+    const a = await deposit(rid(10), DEPOSIT_AMOUNT, deadline);
+    const b = await deposit(rid(11), DEPOSIT_AMOUNT, deadline);
+
+    await warpTo(deadline - 1n);
+
+    // the refund is rejected...
+    await expectRevert(refund(rid(11), b.escrowState, b.vault), "DeadlineNotReached");
+    expect(await tokenBalance(b.vault)).to.equal(DEPOSIT_AMOUNT);
+
+    // ...and the release, on an identical escrow at the same instant, goes through
+    await release(rid(10), a.escrowState, a.vault);
+    expect(await tokenBalance(beneficiaryAta)).to.equal(DEPOSIT_AMOUNT);
+  });
+
+  it("B2. at t = deadline EXACTLY only refund is legal: the release reverts (ReleaseWindowClosed)", async () => {
+    const deadline = nowTs + FIXTURE_TTL;
+    const a = await deposit(rid(12), DEPOSIT_AMOUNT, deadline);
+    const b = await deposit(rid(13), DEPOSIT_AMOUNT, deadline);
+
+    await warpTo(deadline); // the exact edge: `now < deadline` is false, `now >= deadline` is true
+
+    await expectRevert(
+      release(rid(12), a.escrowState, a.vault),
+      "ReleaseWindowClosed"
+    );
+    expect(await tokenBalance(a.vault)).to.equal(DEPOSIT_AMOUNT);
+    expect(await tokenBalance(beneficiaryAta)).to.equal(0n);
+
+    const before = await tokenBalance(senderAta);
+    await refund(rid(13), b.escrowState, b.vault);
+    expect(await tokenBalance(senderAta)).to.equal(before + DEPOSIT_AMOUNT);
+  });
+
+  it("B3. across the whole edge, EXACTLY ONE of release and refund succeeds at every instant", async () => {
+    // The invariant swept, not asserted at a single point. Two twin escrows per instant so that
+    // neither attempt can be rejected merely because the other one already terminated the account.
+    const deadline = nowTs + FIXTURE_TTL;
+    const offsets = [-2n, -1n, 0n, 1n, 2n];
+
+    const twins = offsets.map((_, i) => ({
+      relId: rid(20 + i * 2),
+      refId: rid(21 + i * 2),
+    }));
+    const built: { rel: any; ref: any }[] = [];
+    for (const t of twins) {
+      built.push({
+        rel: await deposit(t.relId, DEPOSIT_AMOUNT, deadline),
+        ref: await deposit(t.refId, DEPOSIT_AMOUNT, deadline),
+      });
+    }
+
+    for (let i = 0; i < offsets.length; i++) {
+      const t = deadline + offsets[i];
+      await warpTo(t);
+      await bumpSlot();
+
+      let releaseOk = false;
+      let refundOk = false;
+      try {
+        await release(twins[i].relId, built[i].rel.escrowState, built[i].rel.vault);
+        releaseOk = true;
+      } catch (_) {
+        /* rejected, which is half the invariant */
+      }
+      try {
+        await refund(twins[i].refId, built[i].ref.escrowState, built[i].ref.vault);
+        refundOk = true;
+      } catch (_) {
+        /* idem */
+      }
+
+      const legal = Number(releaseOk) + Number(refundOk);
+      expect(
+        legal,
+        `at t = deadline ${offsets[i] >= 0n ? "+" : ""}${offsets[i]} exactly one of release/refund must be legal (release=${releaseOk}, refund=${refundOk})`
+      ).to.equal(1);
+      // and which one it is, is decided by the clock, not by who arrives first
+      expect(releaseOk, `release legality at offset ${offsets[i]}`).to.equal(
+        offsets[i] < 0n
+      );
+      expect(refundOk, `refund legality at offset ${offsets[i]}`).to.equal(
+        offsets[i] >= 0n
+      );
+    }
+  });
+
+  it("B4. a release six days after the deadline reverts (ReleaseWindowClosed) and the sender can still refund", async () => {
+    // The defect with no precondition: an escrow deposited a week ago, expired six days ago, was
+    // still releasable today.
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState, vault } = await deposit(rid(40), DEPOSIT_AMOUNT, deadline);
+
+    await warpTo(deadline + 6n * 86_400n);
+    await expectRevert(release(rid(40), escrowState, vault), "ReleaseWindowClosed");
+
+    const before = await tokenBalance(senderAta);
+    await refund(rid(40), escrowState, vault);
+    expect(await tokenBalance(senderAta)).to.equal(before + DEPOSIT_AMOUNT);
+    const state = await program.account.escrowState.fetch(escrowState);
+    expect(statusKey(state.status)).to.equal("refunded");
+  });
 });
