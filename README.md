@@ -202,8 +202,8 @@ can be read back from the chain:
 
 4. **`register_escrow(remittance_id)`** records the id in an `EscrowIndex` account derived from
    `["escrow-index", sender]`, that is, derivable knowing only the sender's own address. It
-   requires the escrow to exist, to belong to the signing sender, and to still be open, so the
-   index only ever lists live escrows. It moves zero tokens. Re-registering the same id neither
+   requires the escrow to exist, to belong to the signing sender, and to still be `Deposited`, so
+   the index only ever lists live escrows. It moves zero tokens. Re-registering the same id neither
    duplicates nor reverts.
 
 5. **`deregister_escrow(remittance_id)`** removes one id from the caller's own index. It is a
