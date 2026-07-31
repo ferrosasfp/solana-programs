@@ -901,4 +901,98 @@ describe("escrow-window — the custody window and the payout freeze", () => {
     // still there, still frozen, still refundable when its extended deadline lands
     expect(await statusOf(escrowState)).to.equal("payoutPending");
   });
+
+  // =========================================================================
+  // E. The status byte of accounts that are ALREADY LIVE
+  //
+  // Why this exists: the legacy test in escrow-index.ts hand-builds an account with status byte 0
+  // and refunds it, which proves the SIZE and the offsets survived. It does not prove the
+  // DISCRIMINANTS survived, because byte 0 stays byte 0 no matter where a new variant is inserted.
+  // Moving `PayoutPending` into the middle of the enum keeps that test green while silently
+  // turning every live `Released` account into something else. Found by mutating it.
+  // =========================================================================
+
+  const ESCROW_STATE_SIZE = 154;
+  const ESCROW_STATE_DISCRIMINATOR: number[] = (idl as any).accounts.find(
+    (a: any) => a.name === "EscrowState"
+  ).discriminator;
+
+  // Bytes assembled BY HAND in the on-chain layout, not written by this program.
+  async function plantLegacyEscrow(
+    id: Uint8Array,
+    statusByte: number,
+    deadline: bigint
+  ): Promise<PublicKey> {
+    const [escrowState, bump] = PublicKey.findProgramAddressSync(
+      [Buffer.from("escrow"), sender.publicKey.toBuffer(), Buffer.from(id)],
+      program.programId
+    );
+    const buf = Buffer.alloc(ESCROW_STATE_SIZE);
+    let o = 0;
+    Buffer.from(ESCROW_STATE_DISCRIMINATOR).copy(buf, o);
+    o += 8;
+    sender.publicKey.toBuffer().copy(buf, o);
+    o += 32;
+    beneficiary.publicKey.toBuffer().copy(buf, o);
+    o += 32;
+    authority.publicKey.toBuffer().copy(buf, o);
+    o += 32;
+    mint.toBuffer().copy(buf, o);
+    o += 32;
+    buf.writeBigUInt64LE(DEPOSIT_AMOUNT, o);
+    o += 8;
+    buf.writeBigInt64LE(deadline, o);
+    o += 8;
+    buf.writeUInt8(statusByte, o);
+    o += 1;
+    buf.writeUInt8(bump, o);
+    o += 1;
+    assert.equal(o, ESCROW_STATE_SIZE, "the layout must fill exactly 154 bytes");
+
+    context.setAccount(escrowState, {
+      lamports: await provider.connection.getMinimumBalanceForRentExemption(
+        ESCROW_STATE_SIZE
+      ),
+      data: new Uint8Array(buf),
+      owner: program.programId,
+      executable: false,
+      rentEpoch: 0,
+    });
+    return escrowState;
+  }
+
+  it("E1. the status byte means the same thing it always meant: 0/1/2 keep their names and 3 is the new one", async () => {
+    const expected: [number, string][] = [
+      [0, "deposited"],
+      [1, "released"],
+      [2, "refunded"],
+      [3, "payoutPending"],
+    ];
+    for (const [byte, name] of expected) {
+      const state = await plantLegacyEscrow(rid(80 + byte), byte, nowTs + FIXTURE_TTL);
+      expect(await statusOf(state), `status byte ${byte}`).to.equal(name);
+    }
+  });
+
+  it("E2. an account already sitting on chain as Released is still closable (its byte was not re-pointed)", async () => {
+    // The behavioural half of E1: a live `Released` account must still be TERMINAL for this
+    // program. If the new variant had been inserted in the middle, byte 1 would now decode as a
+    // non terminal state and this close would revert instead of returning the rent.
+    const id = rid(90);
+    const escrowState = await plantLegacyEscrow(id, 1, nowTs + FIXTURE_TTL);
+    const vault = await createAta(escrowState); // empty vault, as a released escrow's vault is
+
+    await close(id, escrowState, vault);
+    expect(await context.banksClient.getAccount(escrowState)).to.equal(null);
+    expect(await tokenBalance(vault)).to.equal(-1n);
+  });
+
+  it("E3. an account already sitting on chain as Refunded is still closable too", async () => {
+    const id = rid(91);
+    const escrowState = await plantLegacyEscrow(id, 2, nowTs + FIXTURE_TTL);
+    const vault = await createAta(escrowState);
+
+    await close(id, escrowState, vault);
+    expect(await context.banksClient.getAccount(escrowState)).to.equal(null);
+  });
 });

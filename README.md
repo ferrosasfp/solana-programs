@@ -26,7 +26,7 @@ This is a project under implementation, not a finished product.
 | Money at risk | None. Devnet, with a test mint we control. |
 | Upgrade authority | **Present.** The program is deployed under the upgradeable loader and its authority is a single devnet key. See [Upgrade authority](#upgrade-authority). |
 | External audit | **None.** The program has not been reviewed by a third party security firm. |
-| Test coverage | 49 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. |
+| Test coverage | 52 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. |
 | CI | The workflow exists and is currently **failing**, at the tool install step, before it reaches the program. See [Continuous integration](#continuous-integration). |
 | Reproducible build | The mechanism is in place and **has never run on a clean machine**. The hashes below are published so you can try it yourself and tell us if it does not. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
 | Known issues | Written down below, none of them about custody. See [Known limitations](#known-limitations). |
@@ -515,13 +515,13 @@ Tests run on [`anchor-bankrun`](https://github.com/kevinheavey/anchor-bankrun), 
 no local validator, which is what makes deterministic control of the clock possible for the
 deadline cases.
 
-Last measured run: **49 passing**, in about 4 seconds.
+Last measured run: **52 passing**, in about 4 seconds.
 
 | Suite | Tests | What it covers |
 |-------|-------|----------------|
 | `tests/escrow.ts` | 10 | deposit, release, refund, close, the state machine, the 154 byte canary |
 | `tests/escrow-index.ts` | 13 | the index, attacker paths, legacy account compatibility, IDL shape, the entry cap, rent and compute cost |
-| `tests/escrow-window.ts` | 26 | the custody window floor and ceiling, both edges of the release/refund invariant, the freeze and its abort, the dust sweep |
+| `tests/escrow-window.ts` | 29 | the custody window floor and ceiling, both edges of the release/refund invariant, the freeze and its abort, the dust sweep, the status byte of accounts already live |
 
 `escrow-window.ts` re-declares the three constants as its own literals instead of importing them
 from the program. That is deliberate: a test that asked the program for its own number, or that
@@ -532,8 +532,24 @@ The suites import the built IDL directly rather than guarding it behind a file e
 That is on purpose: if the build artifact is missing, the suite must fail loudly instead of
 quietly reporting zero tests.
 
+Every guard the custody window added was mutated one at a time and the suite was re-run against the
+rebuilt artifact. All thirteen mutants turn it red: the release window and its exact edge, the floor
+and the ceiling of the deposit, the freeze accepting a second call, the freeze past the deadline, a
+tenfold extension, the missing `has_one`, an abort that does not move the deadline, a refund that
+refuses the frozen state, a refund without its deadline check, the close whitelist, and the skipped
+dust sweep.
+
+One of them survived at first and it was worth the run. Moving the new status variant into the
+middle of the enum, which re-points the discriminant of every `Released` and `Refunded` account
+already on chain, left the whole suite green: the legacy account test plants status byte 0, and byte
+0 stays byte 0 wherever you insert a variant. Tests E1 to E3 in `escrow-window.ts` close that gap by
+pinning all four bytes to their names and by closing hand-built accounts whose status byte is 1 and
+2. With them, the mutant dies.
+
 If you mutate the program to check that a test really fails, remember that `anchor deploy` ships
-whatever is in `target/deploy/`, it does not compile. Rebuild before deploying anything.
+whatever is in `target/deploy/`, it does not compile. Rebuild before deploying anything. We were
+bitten by this again during the mutation run: the harness restored the source but not the artifact,
+and the next suite run reported failures that had nothing to do with the code on disk.
 
 ## Toolchain
 
