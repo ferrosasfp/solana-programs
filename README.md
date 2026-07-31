@@ -285,10 +285,10 @@ decided before this program is deployed and the client is pointed at it.
 
 `EscrowState` fields: `sender`, `beneficiary`, `authority`, `mint` (32 bytes each), `amount`
 (u64), `deadline` (i64), `status`, `bump`.
-See [`programs/escrow/src/lib.rs:213`](programs/escrow/src/lib.rs#L213).
+See the `EscrowState` struct in [`programs/escrow/src/lib.rs`](programs/escrow/src/lib.rs).
 
 `EscrowIndex` fields: `sender`, `version`, `bump`, `entries` (up to 32 ids of 16 bytes).
-See [`programs/escrow/src/lib.rs:199`](programs/escrow/src/lib.rs#L199).
+See the `EscrowIndex` struct in [`programs/escrow/src/lib.rs`](programs/escrow/src/lib.rs).
 
 Rent exemption, measured by the test suite against the in-process bank:
 
@@ -313,32 +313,28 @@ This is the part a reviewer usually wants first. Each row is enforced by an acco
 rather than by an imperative check, and each has a test that attempts to violate it.
 
 **1. The operator never holds the money.**
-The vault is an associated token account whose authority is the `EscrowState` PDA
-([`lib.rs:279`](programs/escrow/src/lib.rs#L279), [`322`](programs/escrow/src/lib.rs#L322),
-[`357`](programs/escrow/src/lib.rs#L357), [`394`](programs/escrow/src/lib.rs#L394)). Tokens leave
+The vault carries `associated_token::authority = escrow_state` in every context that touches it
+(`Deposit`, `Release`, `Refund`, `Close`), so its authority is the `EscrowState` PDA. Tokens leave
 it only through a CPI signed by the program with the PDA seeds, and there is no instruction that
 takes an arbitrary destination account.
 
 **2. The destination of a release is fixed at deposit time.**
 `release` credits the associated token account of the recorded beneficiary and nothing else, by
-`has_one = beneficiary` plus `associated_token::authority = beneficiary`
-([`lib.rs:313`](programs/escrow/src/lib.rs#L313),
-[`326-330`](programs/escrow/src/lib.rs#L326-L330)). A caller cannot substitute a receiving
+`has_one = beneficiary` plus `associated_token::authority = beneficiary`, both in the `Release`
+context. A caller cannot substitute a receiving
 account. Covered by `escrow.ts` test 1.
 
 **3. Only the recorded authority can release.**
-`has_one = authority` ([`lib.rs:312`](programs/escrow/src/lib.rs#L312)). Anyone else gets
+`has_one = authority` in the `Release` context. Anyone else gets
 `ConstraintHasOne`. Covered by `escrow.ts` test 2, which also asserts the vault was not touched.
 
 **4. Refund does not depend on the authority existing, cooperating, or being online.**
-The `Refund` context has no `authority` account at all
-([`lib.rs:597`](programs/escrow/src/lib.rs#L597)). The sender signs alone, from the
-deadline on ([`lib.rs:165`](programs/escrow/src/lib.rs#L165)). Covered by `escrow.ts` test 4, where
+The `Refund` context has no `authority` account at all. The sender signs alone, from the
+deadline on (`require!(now >= deadline)` in `refund`). Covered by `escrow.ts` test 4, where
 the authority keypair never signs, and `escrow.ts` test 3 for the too-early case.
 
 **4b. Release and refund can never both be legal, at any instant.**
-`release` requires `now < deadline` ([`lib.rs:122`](programs/escrow/src/lib.rs#L122)) and `refund`
-requires `now >= deadline` ([`lib.rs:165`](programs/escrow/src/lib.rs#L165)). Same clock, same
+`release` requires `now < deadline` and `refund` requires `now >= deadline`. Same clock, same
 field, complementary over the integers. This is the property to attack: to refute it you have to
 exhibit an instant and a state where both get in. `escrow-window.ts` tests B1, B2 and B3 try, at
 `deadline - 1`, at `deadline` exactly, and swept across the whole edge asserting that exactly one
@@ -358,21 +354,17 @@ the vault on purpose, satisfy the clock guard as well, and assert that no balanc
 that combination.
 
 **5. One terminal transition, and the state changes before the transfer.**
-Status is set to `Released` or `Refunded` before the CPI, not after
-([`lib.rs:62`](programs/escrow/src/lib.rs#L62) then
-[`84`](programs/escrow/src/lib.rs#L84); [`100`](programs/escrow/src/lib.rs#L100) then
-[`122`](programs/escrow/src/lib.rs#L122)). A second terminal transition hits
+Status is set to `Released` or `Refunded` in the EFFECTS block of `release` and `refund`, before
+the transfer CPI in their INTERACTIONS block, not after. A second terminal transition hits
 `EscrowNotDeposited`. Covered by `escrow.ts` test 5, after a release and after a refund.
 
 **6. A release or refund moves exactly the recorded amount.**
-Both read `escrow_state.amount` ([`lib.rs:67`](programs/escrow/src/lib.rs#L67),
-[`105`](programs/escrow/src/lib.rs#L105)), not the vault balance, so a third party cannot change
+Both transfer `escrow_state.amount`, not the vault balance, so a third party cannot change
 what the beneficiary receives by sending tokens to the vault.
 
 **7. Live seeds cannot be reused, and closed ones cannot be revived.**
-`EscrowState` and the vault are created with plain `init`, never `init_if_needed`
-([`lib.rs:267`](programs/escrow/src/lib.rs#L267),
-[`276`](programs/escrow/src/lib.rs#L276)), so a second deposit on the same
+`EscrowState` and the vault are created with plain `init`, never `init_if_needed`, in the `Deposit`
+context, so a second deposit on the same
 `[sender, remittance_id]` fails at account creation. After a `close` the same seeds work again
 only through a fresh deposit that reinitializes every field. Covered by `escrow.ts` tests 6 and 8.
 
@@ -387,23 +379,22 @@ Covered by `escrow.ts` test 7 and by `escrow-window.ts` D2, which leaves the vau
 asserts that not one token moved.
 
 **9. The index is writable only by its owner.**
-In both instructions the index PDA is seeded by the signing sender
-([`lib.rs:424`](programs/escrow/src/lib.rs#L424), [`439`](programs/escrow/src/lib.rs#L439)), so
-the seeds themselves are the ownership guard: you cannot name someone else's index without their
-signature. `register_escrow` additionally carries `has_one = sender` on the escrow account
-([`lib.rs:412`](programs/escrow/src/lib.rs#L412)) as defence in depth. Covered by
+In both instructions the index PDA is seeded `["escrow-index", sender.key()]` with `sender` as the
+signer, so the seeds themselves are the ownership guard: you cannot name someone else's index
+without their signature. `register_escrow` additionally carries `has_one = sender` on the escrow
+account as defence in depth. Covered by
 `escrow-index.ts` tests 4b and 4c, where an attacker fails both to register into a victim's index
 and to deregister from it.
 
 **10. The index gives the authority no power and moves no tokens.**
 Neither recovery instruction takes an `authority` account and neither performs an SPL transfer.
 `escrow-index.ts` test 4a asserts this against the built IDL rather than against the source:
-exactly 8 instructions, and neither `register_escrow` nor `deregister_escrow` has an `authority`
+exactly 6 instructions, and neither `register_escrow` nor `deregister_escrow` has an `authority`
 account. `escrow-index.ts` test 7 asserts no token balance changes. The count is pinned so that an
 instruction nobody reviewed shows up as a red diff.
 
 **11. The index is bounded and idempotent.**
-32 entries maximum ([`lib.rs:193`](programs/escrow/src/lib.rs#L193)); the 33rd reverts with
+32 entries maximum (`MAX_ENTRIES`); the 33rd reverts with
 `EscrowIndexFull`; re-registering an id neither duplicates it nor reverts. Covered by
 `escrow-index.ts` tests 5 and 6. `EscrowIndex` is the only account created with `init_if_needed`, which is safe here
 because it custodies no funds, its seeds bind it to the signing sender, and every header write in
@@ -419,17 +410,42 @@ concern.
 
 We would rather you read these here than find them yourself.
 
+**A mint with a freeze authority can freeze the vault, and then nothing moves.**
+The vault is an ordinary SPL token account of whatever mint the deposit carried. If that mint has a
+freeze authority, and real USDC does, that authority can freeze the vault account. A frozen token
+account rejects every transfer, so **neither `release` nor `refund` can move a token**, and no
+deadline, guard or signature in this program changes that. This is the only path to permanent
+entrapment we know of, and it comes from outside the program: the program cannot detect it, prevent
+it or route around it. It sits next to the decision not to pin the mint (see [The mint](#the-mint)):
+choosing the mint is choosing whose freeze authority you are exposed to.
+
+**The vault's associated token account can be pre-created by a stranger, blocking the deposit.**
+`deposit` creates the vault with `init`, not `init_if_needed`. The address is an associated token
+account of a PDA derived from `["escrow", sender, remittance_id]`, so anyone who can guess or
+observe those 16 bytes can create that account first, for about 0.002 SOL, and then the deposit
+fails at account creation for that `(sender, remittance_id)` pair, forever. The workaround is
+trivial, use another `remittance_id`, and no funds are ever at risk. It is **pre-existing**, this
+branch does not introduce it, and it is one of the first things an external reviewer finds, so it is
+written here rather than left to be discovered.
+
 **Rent could be griefed by sending dust to the vault. Fixed in this source, not yet deployed.**
 `release` and `refund` move the recorded amount, so the beneficiary and the sender always get
 what they are owed. But the vault is an associated token account at a derivable address, so
 anyone can transfer tokens into it. If they did, the leftover balance made `close` fail with the
 SPL error `NonNativeHasBalance`, because it calls `CloseAccount` on a non empty account, and the
-rent of two accounts stayed dead. `close` now sweeps any residual balance to the sender before
-closing the vault ([`lib.rs:312`](programs/escrow/src/lib.rs#L312)), covered by `escrow-window.ts`
-D1 and D1b. **The devnet program still has the old behaviour until this source is deployed.**
+rent of two accounts stayed dead. `close` now moves the vault balance to the sender before closing
+it, covered by `escrow-window.ts` D1 and D1b. **The devnet program still has the old behaviour
+until this source is deployed.**
+
+Say what that sweep does, precisely: it transfers **the whole of `vault.amount`, with no upper
+bound**, not "the dust". If a third party sends a thousand tokens into the vault of an escrow that
+is already terminal, the sender gets the thousand tokens. It is harmless, the principal was already
+paid to whoever it was owed to and sending tokens to somebody else's account is giving them away,
+but "residual balance" would make you picture a cap that does not exist in the code.
 
 That sweep added a `sender_ata` account to `close`. Any client building the instruction with the
-old account list has to add it.
+old account list has to add it, and there is no safe order in which to deploy the two: see
+[the account list of `close`](#the-account-list-of-close-has-no-safe-deployment-order).
 
 **The custody window is enforced on chain, and only on chain.**
 The floor and the ceiling stop a one second deadline and an `i64::MAX` deadline from being
@@ -441,6 +457,13 @@ willing to pay its own fee, with any mint. The mint is deliberately not pinned i
 Every deadline is measured against `Clock::unix_timestamp`, which can drift from wall time. The
 nominal window and the effective one are not exactly the same. We have not measured that drift and
 the margins were not chosen against it.
+
+**The floor does not fit the client that exists today.**
+The client derives the escrow deadline from a quote that expires in 10 minutes, which is below the
+one hour floor, so every deposit it builds would revert with `DeadlineTooSoon`. That is a product
+decision with two possible answers and a real cost on both sides, written up in
+[`doc/decisions/deadline-vs-quote-ttl.md`](doc/decisions/deadline-vs-quote-ttl.md). It has to be
+decided before this program is deployed and the client is pointed at it.
 
 **The window bounds time, not amount.**
 It caps how long a sender is exposed. It says nothing about how much. A cap on the amount that can

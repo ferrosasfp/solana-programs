@@ -409,6 +409,12 @@ pub struct Deposit<'info> {
     /// el mint tiene que clavarse acá, porque ahí un depósito auto-fondeado con el mint de un
     /// atacante entraría a un camino de producto. Los enumeradores de hoy (EscrowIndex y el
     /// resolver de ids) sólo alimentan el refund, que es inofensivo.
+    ///
+    /// LO QUE ESTA DECISIÓN SE LLEVA PUESTO, y es el único atrapamiento permanente que conocemos:
+    /// el vault es una token account SPL común de este mint. Si el mint tiene FREEZE AUTHORITY (el
+    /// USDC real la tiene), esa authority puede congelar el vault, y una token account congelada
+    /// rechaza toda transferencia: ni `release` ni `refund` pueden mover un token, sin importar el
+    /// deadline, la firma ni el estado. Elegir el mint es elegir a qué freeze authority te exponés.
     pub mint: Account<'info, Mint>,
 
     #[account(
@@ -420,6 +426,11 @@ pub struct Deposit<'info> {
     )]
     pub escrow_state: Account<'info, EscrowState>,
 
+    /// `init` y no `init_if_needed`, y eso tiene un costo conocido: la dirección de esta ATA es
+    /// derivable antes del depósito, así que cualquiera que vea o adivine los 16 bytes del
+    /// `remittance_id` puede crearla primero por ~0.002 SOL y dejar ese par (sender, remittance_id)
+    /// sin poder depositar nunca. No hay fondos en riesgo y la salida es usar otro id. Es
+    /// PRE-EXISTENTE, no lo introduce la ventana de custodia, y está escrito en el README.
     #[account(
         init,
         payer = sender,
