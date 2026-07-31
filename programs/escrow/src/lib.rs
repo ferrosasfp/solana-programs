@@ -1,8 +1,77 @@
+//! Non-custodial escrow for the in-flight moment of a remittance.
+//!
+//! # What it custodies
+//!
+//! One SPL token account (the `vault`) per remittance. Its authority is the
+//! `escrow_state` PDA, derived from `["escrow", sender, remittance_id]`, so no
+//! human and no operator holds a key that can move it. `EscrowState` records the
+//! `sender`, the `beneficiary`, the `authority` (operator), the `mint`, the
+//! `amount` and the `deadline`, all written once at `deposit` and never mutated
+//! afterwards except `status`.
+//!
+//! # Who can take the money out, and when
+//!
+//! The `deadline` chosen at deposit cuts time into two windows that never overlap:
+//!
+//! | Instruction | Who signs | When it is legal | Where the tokens go |
+//! |---|---|---|---|
+//! | `release` | `authority` (the operator) | `now <  deadline` | the `beneficiary` fixed at deposit |
+//! | `refund`  | `sender` | `now >= deadline` | back to the `sender` |
+//!
+//! Both also require `status == Deposited` and both write a terminal status
+//! *before* the transfer, so neither can run twice. Because the two windows are
+//! disjoint, at most one of them is legal at any instant: the operator cannot
+//! outrun a sender who is refunding, and the sender cannot claw back a payment
+//! the operator already made. That is the single invariant worth attacking.
+//!
+//! No instruction can send tokens to an address that was not written into
+//! `EscrowState` at deposit time, and no key can move the vault anywhere else.
+//!
+//! `deadline` is clamped at deposit to `[now + MIN_CUSTODY_SECS, now +
+//! MAX_CUSTODY_SECS]` (1 h to 24 h), so the sender's worst case wait before the
+//! refund path opens is bounded by the program and not by the operator.
+//!
+//! # What it deliberately does not do
+//!
+//! No fees, no partial release, no dispute resolution, and no admin instruction
+//! that can touch a live escrow. `close` runs only from a terminal state and only
+//! returns rent, plus any tokens a stranger sent to the vault, to the sender.
+//!
+//! # What still requires trust
+//!
+//! The program is deployed under the upgradeable loader and its upgrade authority
+//! is a single key: whoever holds it can replace all of the above. See
+//! `SECURITY.md` and the README for the current authority and for the two known
+//! custody limitations (a mint's freeze authority can freeze the vault, and the
+//! vault's associated token account can be front-created to block a deposit).
+
 use anchor_lang::prelude::*;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token::{Mint, Token, TokenAccount};
 
 declare_id!("DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x");
+
+// On-chain contact card, readable straight off the deployed binary with
+// `solana-verify get-security-txt` or the Neodyme parser, so a finder does not
+// have to guess who to tell. Compiled out under `no-entrypoint` (the feature used
+// when this crate is pulled in as a CPI dependency) so it ships only in the
+// program itself. Every field name here is validated by the crate's parser, which
+// rejects unknown keys; `contacts` entries must be `type:value`.
+#[cfg(not(feature = "no-entrypoint"))]
+use solana_security_txt::security_txt;
+
+#[cfg(not(feature = "no-entrypoint"))]
+security_txt! {
+    name: "WasiAI escrow",
+    project_url: "https://github.com/ferrosasfp/solana-programs",
+    contacts: "email:fernando@wasiai.io",
+    policy: "https://github.com/ferrosasfp/solana-programs/blob/main/SECURITY.md",
+    preferred_languages: "es,en",
+    source_code: "https://github.com/ferrosasfp/solana-programs",
+    // Stated because "no audit" is itself information a reviewer needs, and an
+    // absent field would read as an oversight rather than as the answer.
+    auditors: "None"
+}
 
 // ---------------------------------------------------------------------------
 // Los rieles de la ventana de custodia
@@ -93,7 +162,7 @@ pub mod escrow {
         escrow.status = EscrowStatus::Deposited;
         escrow.bump = ctx.bumps.escrow_state;
 
-        // 3. INTERACTIONS — transfer-in: sender firma DIRECTO (no PDA). sender_ata -> vault.
+        // 3. INTERACTIONS: transfer-in, sender firma DIRECTO (no PDA). sender_ata -> vault.
         let cpi_accounts = anchor_spl::token::Transfer {
             from: ctx.accounts.sender_ata.to_account_info(),
             to: ctx.accounts.vault.to_account_info(),
@@ -130,10 +199,10 @@ pub mod escrow {
             ErrorCode::ReleaseWindowClosed
         );
 
-        // 2. EFFECTS (ANTES de la CPI — CEI / AC-2)
+        // 2. EFFECTS (ANTES de la CPI: CEI / AC-2)
         ctx.accounts.escrow_state.status = EscrowStatus::Released;
 
-        // 3. INTERACTIONS — CPI firmada por el PDA: vault -> beneficiary_ata, por escrow_state.amount
+        // 3. INTERACTIONS: CPI firmada por el PDA, vault -> beneficiary_ata, por escrow_state.amount
         let sender_key = ctx.accounts.sender.key();
         let bump = ctx.accounts.escrow_state.bump;
         let amount = ctx.accounts.escrow_state.amount;
@@ -173,10 +242,10 @@ pub mod escrow {
             ErrorCode::DeadlineNotReached
         );
 
-        // 2. EFFECTS (ANTES — CEI / AC-2)
+        // 2. EFFECTS (ANTES de la CPI: CEI / AC-2)
         ctx.accounts.escrow_state.status = EscrowStatus::Refunded;
 
-        // 3. INTERACTIONS — CPI firmada por el PDA: vault -> sender_ata, por escrow_state.amount
+        // 3. INTERACTIONS: CPI firmada por el PDA, vault -> sender_ata, por escrow_state.amount
         let sender_key = ctx.accounts.sender.key();
         let bump = ctx.accounts.escrow_state.bump;
         let amount = ctx.accounts.escrow_state.amount;
@@ -265,7 +334,7 @@ pub mod escrow {
         let index = &mut ctx.accounts.escrow_index;
         require!(index.entries.len() < MAX_ENTRIES, ErrorCode::EscrowIndexFull);
 
-        // 2. EFFECTS — escrituras IDEMPOTENTES del header (CD-9): `sender` y `bump` están fijados
+        // 2. EFFECTS: escrituras IDEMPOTENTES del header (CD-9), `sender` y `bump` están fijados
         // por las seeds y `version` es una constante ⇒ re-ejecutar esto no puede resetear nada.
         index.sender = ctx.accounts.sender.key();
         index.version = ESCROW_INDEX_VERSION;
@@ -337,9 +406,9 @@ pub enum EscrowStatus {
     // EXACTAMENTE TRES VARIANTES, y el número es parte del contrato con los consumidores: el IDL
     // que pinnean chaski-v3 y el facilitator declara estas tres, así que un byte de status 4º haría
     // que su `BorshAccountsCoder` tire `TypeError` al decodificar la cuenta. Una variante nueva
-    // (por ejemplo el `PayoutPending` de la fase 2, ver README) se apendiza al FINAL —los
+    // (por ejemplo el `PayoutPending` de la fase 2, ver README) se apendiza al FINAL (los
     // discriminantes 0, 1 y 2 están escritos en cuentas VIVAS y moverlos le cambia el significado a
-    // bytes que ya existen— y NO se despliega hasta que los dos consumidores publiquen el IDL nuevo
+    // bytes que ya existen) y NO se despliega hasta que los dos consumidores publiquen el IDL nuevo
     // y traten el estado nuevo. El test E1b de escrow-window.ts es el alambre de ese contrato.
 }
 
