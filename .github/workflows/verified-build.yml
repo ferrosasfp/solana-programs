@@ -1,0 +1,158 @@
+name: verified-build
+
+# Answers one question, and fails when the answer is no: do the bytes running on
+# devnet come from the source in this repository?
+#
+# Nothing here deploys, upgrades, signs, or needs a keypair. Every RPC call is a
+# read. See CD-5 in .github/workflows/ci.yml: deploys are gated to
+# scripts/deploy-devnet.sh and never happen in CI.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so an unannounced upgrade of the deployed program turns this red
+    # even if nobody pushes.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROGRAM_ID: "DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x"
+  LIBRARY_NAME: "escrow"
+  CLUSTER_URL: "https://api.devnet.solana.com"
+  # The two hashes published in README.md. They are pinned here on purpose: if a
+  # redeploy changes what is on chain, or if a change to this repository changes
+  # what the build produces, this workflow goes red until README.md is corrected.
+  # A control that only compares two values it computed itself would pass through
+  # a silent redeploy; this one does not.
+  #
+  # sha256 over the deployed bytes exactly as they are (== sha256sum of the .so).
+  EXPECTED_ARTIFACT_SHA256: "dc0ba21a5a620ef5dd1546c2c9e86eb6d00f9ca438e97bb4e2a5fa09819a8960"
+  # sha256 over the same bytes with trailing zero padding removed, which is the
+  # convention solana-verify uses. The escrow binary ends in 15 zero bytes, so
+  # this value differs from the one above. Both describe the same artifact.
+  EXPECTED_VERIFY_HASH: "2c012e78a567584978e48fe1b20cd641d03389ae2e5944402d31eaa548e29779"
+
+jobs:
+  # Cheap and dependency free: does the chain still hold what README.md claims?
+  # Runs in seconds and needs no Docker, so it keeps working even if the
+  # container build below breaks.
+  onchain-hash:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deployed bytes match the hashes published in README.md
+        run: |
+          python3 scripts/onchain-hash.py \
+            --program-id "$PROGRAM_ID" \
+            --url "$CLUSTER_URL" \
+            --expect-artifact-sha256 "$EXPECTED_ARTIFACT_SHA256" \
+            --expect-verify-hash "$EXPECTED_VERIFY_HASH"
+
+  # The real claim: rebuild from source in a pinned container and prove the
+  # result is the deployed binary, byte for byte.
+  reproducible-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SOLANA_VERIFY_VERSION: "0.5.1"
+      # sha256 published next to the release asset. Downloading a build tool over
+      # the network and running it unverified would defeat the purpose of the job.
+      SOLANA_VERIFY_SHA256: "b101230b26d5f75d17d931e5056d1a6253904f65649abe7bedb7b81dd38df114"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install solana-verify
+        run: |
+          set -euo pipefail
+          url="https://github.com/solana-foundation/solana-verifiable-build/releases/download/v${SOLANA_VERIFY_VERSION}/solana-verify-${SOLANA_VERIFY_VERSION}-linux"
+          mkdir -p "$HOME/.local/bin"
+          curl -sSfL "$url" -o "$HOME/.local/bin/solana-verify"
+          echo "${SOLANA_VERIFY_SHA256}  ${HOME}/.local/bin/solana-verify" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/solana-verify"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/solana-verify" --version
+
+      # Reads [workspace.metadata.cli] solana = "3.1.10" from the root Cargo.toml
+      # and pulls the matching build image by digest. Without that key the tool
+      # falls back to Cargo.lock, which has no solana-program (Anchor 1.x uses the
+      # split crates), lands on solana-program-error 3.0.1, and builds with the
+      # wrong platform-tools.
+      - name: Build in the pinned container
+        run: |
+          set -euo pipefail
+          solana-verify build --library-name "$LIBRARY_NAME"
+
+      - name: Compare the rebuilt artifact against the deployed program
+        run: |
+          set -euo pipefail
+
+          require_hash() {
+            # A control that compares two empty strings always passes. Refuse to
+            # continue unless the value really looks like a sha256.
+            local label="$1" value="$2"
+            if ! printf '%s' "$value" | grep -Eq '^[0-9a-f]{64}$'; then
+              echo "FAIL ${label} is not a sha256: '${value}'"
+              exit 1
+            fi
+          }
+
+          assert_eq() {
+            local label="$1" left="$2" right="$3"
+            if [ "$left" != "$right" ]; then
+              echo "FAIL ${label}"
+              echo "  left  ${left}"
+              echo "  right ${right}"
+              exit 1
+            fi
+            echo "ok   ${label}"
+          }
+
+          so="target/deploy/${LIBRARY_NAME}.so"
+          test -f "$so" || { echo "FAIL ${so} was not produced by the container build"; exit 1; }
+
+          built_artifact="$(sha256sum "$so" | cut -d' ' -f1)"
+          built_verify="$(solana-verify get-executable-hash "$so" | tail -n 1)"
+          # -u is a top-level global arg and the RPC client is built from the
+          # top-level matches, so it has to come BEFORE the subcommand. Placed
+          # after it, solana-verify silently falls back to mainnet-beta.
+          onchain_verify="$(solana-verify -u "$CLUSTER_URL" get-program-hash "$PROGRAM_ID" | tail -n 1)"
+
+          require_hash "built artifact sha256" "$built_artifact"
+          require_hash "built verify hash" "$built_verify"
+          require_hash "on-chain verify hash" "$onchain_verify"
+
+          echo "built artifact sha256  ${built_artifact}"
+          echo "built verify hash      ${built_verify}"
+          echo "on-chain verify hash   ${onchain_verify}"
+          echo ""
+
+          # 1. The rebuild reproduces the artifact this repository publishes.
+          assert_eq "rebuilt artifact == the sha256 published in README.md" \
+            "$built_artifact" "$EXPECTED_ARTIFACT_SHA256"
+          # 2. The rebuild reproduces what is actually deployed on devnet. This is
+          #    the comparison the whole job exists for.
+          assert_eq "rebuilt artifact == the program deployed on devnet" \
+            "$built_verify" "$onchain_verify"
+          # 3. And the chain still holds the version README.md describes, so a
+          #    redeploy cannot slip past by matching a rebuild of a newer source.
+          assert_eq "deployed program == the verify hash published in README.md" \
+            "$onchain_verify" "$EXPECTED_VERIFY_HASH"
+
+      # Only meaningful when everything above passed; on failure the run stops
+      # before this and the artifact is not published as if it were verified.
+      - name: Upload the rebuilt binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: escrow-so-reproducible
+          path: target/deploy/escrow.so
+          if-no-files-found: error

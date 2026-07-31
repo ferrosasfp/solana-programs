@@ -27,6 +27,7 @@ This is a project under implementation, not a finished product.
 | External audit | **None.** The program has not been reviewed by a third party security firm. |
 | Test coverage | 23 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. |
 | CI | The workflow exists and is currently **failing**, at the tool install step, before it reaches the program. See [Continuous integration](#continuous-integration). |
+| Reproducible build | The mechanism is in place and **has never run on a clean machine**. The hashes below are published so you can try it yourself and tell us if it does not. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
 | Known issues | Written down below, none of them about custody. See [Known limitations](#known-limitations). |
 
 What we do claim: the custody properties below are enforced by account constraints, and each one
@@ -48,22 +49,35 @@ Read on devnet at the time of writing:
 | Upgrade authority | `4wPhH4dCndAEbdKJS3TC3JF6eeNfC4JrVej4DoYd54jH` |
 | Last deployed in slot | `479522576` |
 | Deployed bytes | 262568 |
-| `sha256` of the deployed bytes | `dc0ba21a5a620ef5dd1546c2c9e86eb6d00f9ca438e97bb4e2a5fa09819a8960` |
+| `sha256` of the deployed bytes (`artifact-sha256`) | `dc0ba21a5a620ef5dd1546c2c9e86eb6d00f9ca438e97bb4e2a5fa09819a8960` |
+| `sha256` of the same bytes without trailing padding (`verify-hash`) | `2c012e78a567584978e48fe1b20cd641d03389ae2e5944402d31eaa548e29779` |
 
-Verify it yourself, no keypair needed:
+Two hashes, one binary, and they do not agree. That is expected, not a discrepancy:
+`sha256sum` on the `.so` hashes every byte, while `solana-verify` strips trailing zero bytes
+first. The escrow binary ends in 15 zero bytes, so the two conventions land on different
+values. Whichever tool you use, compare against the row that matches it.
+
+Verify it yourself, no keypair, no toolchain, no Docker, nothing to install:
+
+```bash
+python3 scripts/onchain-hash.py --program-id DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x --url devnet
+```
+
+It reads the program account, follows it to the ProgramData account, and prints both hashes
+along with the deployed slot and the upgrade authority. Standard library only, no packages.
+Give it `--expect-artifact-sha256` and `--expect-verify-hash` and it exits non-zero when the
+chain stops matching what this file claims.
+
+The equivalent with the Solana CLI, if you already have it:
 
 ```bash
 solana program show DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x --url devnet
-
-# and to compare the deployed bytes against a local build of this repo:
-anchor build
 solana program dump DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x /tmp/onchain.so --url devnet
-sha256sum /tmp/onchain.so target/deploy/escrow.so
+sha256sum /tmp/onchain.so
 ```
 
-On our machine, a rebuild with the pinned toolchain produces exactly the bytes that are
-deployed. We have not tested whether that reproduces on a different machine, so treat the
-hash as something to compare, not as a reproducible build guarantee.
+That tells you what is deployed. It does not tell you the deployed bytes came from this
+source. For that, see [Reproducing the deployed binary](#reproducing-the-deployed-binary).
 
 The program id has a single source of truth, `declare_id!` in
 [`programs/escrow/src/lib.rs:5`](programs/escrow/src/lib.rs#L5), mirrored in `Anchor.toml` and in
@@ -82,6 +96,59 @@ The full lifecycle has been exercised against the deployed program with a real S
 
 The two index instructions are deployed but have not been called on chain yet, so there are no
 `EscrowIndex` accounts on devnet. Their behaviour is covered by the test suite only.
+
+## Reproducing the deployed binary
+
+Everything above tells you what is on chain. This section is about the harder claim: that those
+bytes were produced by the source in this repository, and that you can produce them too.
+
+### What you can check right now
+
+```bash
+git clone https://github.com/ferrosasfp/solana-programs
+cd solana-programs
+cargo install solana-verify --locked          # or grab the release binary
+solana-verify build --library-name escrow     # needs Docker, takes a while
+solana-verify get-executable-hash target/deploy/escrow.so
+solana-verify -u https://api.devnet.solana.com get-program-hash DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x
+```
+
+The last two commands must both print:
+
+```
+2c012e78a567584978e48fe1b20cd641d03389ae2e5944402d31eaa548e29779
+```
+
+and `sha256sum target/deploy/escrow.so` must print
+`dc0ba21a5a620ef5dd1546c2c9e86eb6d00f9ca438e97bb4e2a5fa09819a8960`.
+
+`-u` has to come before the subcommand. It is a global argument read from the top level, and
+placed after `get-program-hash` the tool quietly falls back to mainnet, where this program does
+not exist.
+
+### What we have and have not confirmed
+
+| | |
+|---|---|
+| The deployed bytes equal our local `target/deploy/escrow.so` | **Confirmed**, byte for byte, on the machine that built and deployed it. |
+| The binary carries no path from that machine | **Confirmed.** The only absolute path embedded is inside the precompiled platform-tools, identical for everyone using the same Agave version. |
+| A container rebuild reproduces those bytes | **Not confirmed.** The workflow that would prove it has never completed a run. |
+| An independent third party reproduced it | **Not confirmed.** Nobody outside this project has tried yet. |
+
+So: we are not claiming a reproducible build. We are claiming that the mechanism to check one is
+wired up and public, and that if it does not reproduce on your machine, that is a finding we want
+to hear about rather than one we have quietly avoided testing.
+
+### Why the build image had to be declared
+
+`solana-verify` picks the Docker image from `[workspace.metadata.cli] solana` in the root
+`Cargo.toml`, and only falls back to `Cargo.lock` when that key is absent. The fallback is wrong
+for this repository: Anchor 1.x does not depend on `solana-program`, so the lock resolves through
+`solana-program-error 3.0.1` and the tool would build with the 3.0.1 image. The deployed bytes
+came out of Agave 3.1.10, a different platform-tools, so the comparison would fail for a reason
+that has nothing to do with the source. The key is set to `3.1.10`
+([`Cargo.toml:20`](Cargo.toml#L20)) and has to move together with `rust-toolchain.toml`, the
+workflows, and the Toolchain table below.
 
 ## Flow
 
@@ -259,7 +326,7 @@ the handler is idempotent, so nothing ever resets `entries`.
 
 **12. Arithmetic overflow aborts.**
 `overflow-checks = true` in both the release and test profiles
-([`Cargo.toml:12`](Cargo.toml#L12), [`Cargo.toml:21`](Cargo.toml#L21)). There is no arithmetic on
+([`Cargo.toml:23`](Cargo.toml#L23), [`Cargo.toml:32`](Cargo.toml#L32)). There is no arithmetic on
 `amount` in the program today, so this is a guard against future changes rather than a live
 concern.
 
@@ -356,13 +423,56 @@ whatever is in `target/deploy/`, it does not compile. Rebuild before deploying a
 | Tool | Version |
 |------|---------|
 | rustc | 1.89.0, pinned by `rust-toolchain.toml` |
-| solana-cli (Agave) | 3.1.10 |
+| solana-cli (Agave) | 3.1.10, declared in `[workspace.metadata.cli]` so `solana-verify` picks the matching build image |
 | anchor-cli | 1.1.2 |
+
+These versions appear in `rust-toolchain.toml`, `Cargo.toml`, both workflows and this table. They
+have to be changed together. A mismatch does not break the build, it breaks the reproduction,
+which is a quieter failure.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` builds the program and runs the whole suite on every push and pull
-request. It never deploys.
+Two workflows, neither of which deploys anything.
+
+| Workflow | What it does | State |
+|----------|--------------|-------|
+| `.github/workflows/ci.yml` | clippy with `-D warnings`, `anchor build`, the whole test suite | **red**, see below |
+| `.github/workflows/verified-build.yml` | rebuilds in the pinned container and compares the result against the program on devnet | **never run** |
+
+### `verified-build.yml`
+
+Two independent jobs:
+
+`onchain-hash` runs `scripts/onchain-hash.py` against devnet and fails if the deployed bytes
+stop matching the two hashes published in this file. No Docker, no toolchain, seconds to run.
+It also fires on a weekly schedule, so an unannounced upgrade of the deployed program turns the
+workflow red even if nobody pushes.
+
+`reproducible-build` downloads `solana-verify` (checksum pinned), rebuilds inside the container
+selected by `[workspace.metadata.cli] solana = "3.1.10"`, and then makes three comparisons, any
+of which fails the job:
+
+1. the rebuilt `.so` against the `artifact-sha256` published above
+2. the rebuilt `.so` against the program deployed on devnet
+3. the deployed program against the `verify-hash` published above
+
+The third one exists because the first two, on their own, would still pass after a silent
+redeploy accompanied by a matching source change. It also refuses to run a comparison on a value
+that is not a 64 character hex string, because two empty strings compare equal and a control that
+cannot fail is worse than no control.
+
+**This workflow has never completed a run.** The comparison logic was exercised locally against
+stubs, covering the matching case, a rebuild that differs from the chain, a chain that differs
+from this file, an empty tool output, a missing artifact, and a rebuilt binary that is not the
+published one. All six behaved correctly. The container build itself could not be tested here,
+there is no usable Docker in the environment where this was written, so whether the rebuild
+actually reproduces the deployed bytes is still an open question. Until a run comes back green,
+read the table in [Reproducing the deployed binary](#reproducing-the-deployed-binary) as the
+statement of record.
+
+### `ci.yml`
+
+Builds the program and runs the whole suite on every push and pull request.
 
 **It is currently red, and not because of the program.** The workflow builds the Anchor CLI from
 source, and one of the CLI's own transitive dependencies has raised its minimum supported rustc
@@ -375,6 +485,13 @@ uses a separate modern host toolchain for that binary only. The program is still
 present, but it has not been confirmed on a GitHub runner yet. Until a run comes back green, the
 honest statement is the one at the top of this file: the build and the tests pass locally with
 the pinned toolchain, and the commands above let you check that for yourself.
+
+**Lints.** `cargo clippy --all-targets -- -D warnings` now runs before anything else, and the
+tree passes it. `cargo fmt` does **not** run and is not enforced: the program does not currently
+pass `cargo fmt --all -- --check`, mostly comment alignment and two multi line reformats in
+`programs/escrow/src/lib.rs`. Reformatting the program to make a build infrastructure change go
+green would have meant touching the source this repository exists to keep verifiable, so the
+check was left out and written down here instead. Adding it means one formatting commit first.
 
 ## Deploying
 

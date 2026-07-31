@@ -23,7 +23,18 @@ jobs:
       - name: Install Rust (program toolchain)
         uses: dtolnay/rust-toolchain@1.89.0
         with:
+          # clippy is enforced below. rustfmt is installed but NOT enforced: the
+          # tree does not currently pass `cargo fmt --all -- --check` and
+          # reformatting the program is not something a build-infrastructure
+          # change should do on its own. Stated in README.md rather than hidden.
           components: rustfmt, clippy
+
+      # Runs with 1.89.0: rust-toolchain.toml applies inside the checkout, and the
+      # step is placed before the CLI installs so a lint failure is reported in a
+      # minute instead of twenty. `-D warnings` makes this a control that can
+      # actually fail; the tree was clean when the step was added.
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
 
       # A second, modern host toolchain used ONLY to build the Anchor CLI binary.
       # anchor-cli 1.1.2 pulls cargo-platform 0.3.3, whose minimum supported rustc

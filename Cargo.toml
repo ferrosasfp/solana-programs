@@ -8,6 +8,17 @@ resolver = "2"
 edition = "2021"
 rust-version = "1.89.0"
 
+# Which Solana CLI built the deployed binary. `solana-verify` reads this key first
+# (src/main.rs: get_solana_version_from_workspace_metadata) and only falls back to
+# Cargo.lock if it is absent. The fallback would be wrong here: Anchor 1.x does not
+# pull `solana-program`, so the lock resolves through `solana-program-error 3.0.1`
+# and the tool would pick the 3.0.1 build image, a different platform-tools than the
+# 3.1.10 that produced the bytes on devnet, and the comparison would fail for a
+# reason that has nothing to do with the source. Must stay in sync with
+# rust-toolchain.toml, .github/workflows/*.yml and the Toolchain table in README.md.
+[workspace.metadata.cli]
+solana = "3.1.10"
+
 [profile.release]
 overflow-checks = true
 lto = "fat"
