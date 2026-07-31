@@ -27,8 +27,8 @@ This is a project under implementation, not a finished product.
 | Upgrade authority | **Present.** The program is deployed under the upgradeable loader and its authority is a single devnet key. See [Upgrade authority](#upgrade-authority). |
 | External audit | **None.** The program has not been reviewed by a third party security firm. |
 | Test coverage | 43 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. |
-| CI | The workflow exists and is currently **failing**, at the tool install step, before it reaches the program. See [Continuous integration](#continuous-integration). |
-| Reproducible build | The mechanism is in place and **has never run on a clean machine**. The hashes below are published so you can try it yourself and tell us if it does not. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
+| CI | **Green.** clippy, `anchor build` and the 43 tests run on every push. See [Continuous integration](#continuous-integration). |
+| Reproducible build | **Confirmed once, on a machine that is not ours.** A GitHub runner rebuilt the program in the pinned container and reproduced the deployed devnet bytes exactly. Nobody outside this project has repeated it. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
 | Known issues | Written down below, **and two of them are about custody**: a mint with a freeze authority can freeze the vault, and the vault's associated token account can be pre-created by a stranger to block a deposit. See [Known limitations](#known-limitations). |
 
 What we do claim: the custody properties below are enforced by account constraints, and each one
@@ -140,12 +140,12 @@ not exist.
 |---|---|
 | The deployed bytes equal our local `target/deploy/escrow.so` | **Confirmed**, byte for byte, on the machine that built and deployed it. |
 | The binary carries no path from that machine | **Confirmed.** The only absolute path embedded is inside the precompiled platform-tools, identical for everyone using the same Agave version. |
-| A container rebuild reproduces those bytes | **Not confirmed.** The workflow that would prove it has never completed a run. |
-| An independent third party reproduced it | **Not confirmed.** Nobody outside this project has tried yet. |
+| A container rebuild reproduces those bytes | **Confirmed**, on a GitHub runner, at commit [`36444ef`](https://github.com/ferrosasfp/solana-programs/commit/36444ef0684bfd3da2b91eb9482ea88d8169da22) ([run 30664488714](https://github.com/ferrosasfp/solana-programs/actions/runs/30664488714)). All three comparisons passed: the rebuild matched the published `artifact-sha256`, it matched the program on devnet, and devnet matched the published `verify-hash`. |
+| An independent third party reproduced it | **Not confirmed.** Nobody outside this project has tried yet. A GitHub runner is not our laptop, but it is still our workflow. |
 
-So: we are not claiming a reproducible build. We are claiming that the mechanism to check one is
-wired up and public, and that if it does not reproduce on your machine, that is a finding we want
-to hear about rather than one we have quietly avoided testing.
+So: the mechanism is wired up, public, and has come back green once on hardware we do not own.
+What is still missing is somebody with no stake in this repository running it and saying so. If it
+does not reproduce on your machine, that is a finding we want to hear about.
 
 ### Why the build image had to be declared
 
@@ -618,8 +618,8 @@ Two workflows, neither of which deploys anything.
 
 | Workflow | What it does | State |
 |----------|--------------|-------|
-| `.github/workflows/ci.yml` | clippy with `-D warnings`, `anchor build`, the whole test suite | **red**, see below |
-| `.github/workflows/verified-build.yml` | rebuilds in the pinned container and compares the result against the program on devnet | **never run** |
+| `.github/workflows/ci.yml` | clippy with `-D warnings`, `anchor build`, the whole test suite | **green** |
+| `.github/workflows/verified-build.yml` | rebuilds in the pinned container and compares the result against the program on devnet | **green**, and see the caveat below about what it is claiming right now |
 
 ### `verified-build.yml`
 
@@ -631,42 +631,49 @@ It also fires on a weekly schedule, so an unannounced upgrade of the deployed pr
 workflow red even if nobody pushes.
 
 `reproducible-build` downloads `solana-verify` (checksum pinned), rebuilds inside the container
-selected by `[workspace.metadata.cli] solana = "3.1.10"`, and then makes three comparisons, any
-of which fails the job:
+selected by `[workspace.metadata.cli] solana = "3.1.10"`, and compares the result. It refuses to
+compare a value that is not a 64 character hex string, because two empty strings compare equal
+and a control that cannot fail is worse than no control.
 
-1. the rebuilt `.so` against the `artifact-sha256` published above
-2. the rebuilt `.so` against the program deployed on devnet
-3. the deployed program against the `verify-hash` published above
+**What it asserts depends on a declared state**, `SOURCE_REPRODUCES_CHAIN` in the workflow:
 
-The third one exists because the first two, on their own, would still pass after a silent
-redeploy accompanied by a matching source change. It also refuses to run a comparison on a value
-that is not a 64 character hex string, because two empty strings compare equal and a control that
-cannot fail is worse than no control.
+| | `true` | `false` (today) |
+|---|---|---|
+| deployed program == `verify-hash` published above | checked | checked |
+| rebuilt `.so` == `artifact-sha256` published above | checked | not checked |
+| rebuilt `.so` == program on devnet | checked | **must differ** |
 
-**This workflow has never completed a run.** The comparison logic was exercised locally against
-stubs, covering the matching case, a rebuild that differs from the chain, a chain that differs
-from this file, an empty tool output, a missing artifact, and a rebuilt binary that is not the
-published one. All six behaved correctly. The container build itself could not be tested here,
-there is no usable Docker in the environment where this was written, so whether the rebuild
-actually reproduces the deployed bytes is still an open question. Until a run comes back green,
-read the table in [Reproducing the deployed binary](#reproducing-the-deployed-binary) as the
-statement of record.
+It is set to `false` because the custody window is merged here and not deployed, so a rebuild
+cannot match the chain. That is the honest state, and it is worth being precise about what the
+flag does and does not do:
+
+- It is **not** a mute switch. With `false` the job *requires* the rebuild to differ from devnet.
+  Deploy the program and forget to flip the flag, and the run goes red instead of quietly passing.
+- The first row is checked in **both** states and does not depend on the source at all, so an
+  upgrade nobody announced still turns the workflow red. That is also what the weekly schedule is
+  for.
+
+The assertion block was exercised against injected hashes in all eight combinations: the two
+that must pass, and the six that must fail (deployed without flipping the flag, chain moved
+unannounced, empty tool output, non-hex garbage, rebuild differing from the chain, rebuild
+differing from this file). All eight behaved as expected.
+
+The honest gap: **the byte-for-byte claim is not being re-checked on every run right now.** It was
+checked, and passed, at [`36444ef`](https://github.com/ferrosasfp/solana-programs/commit/36444ef0684bfd3da2b91eb9482ea88d8169da22),
+the last commit whose source matched the chain. It starts being checked again on every run the
+moment the custody window is deployed and the flag flips back to `true`.
 
 ### `ci.yml`
 
-Builds the program and runs the whole suite on every push and pull request.
+Builds the program and runs the whole suite on every push and pull request. **It is green**, in
+about nine minutes.
 
-**It is currently red, and not because of the program.** The workflow builds the Anchor CLI from
-source, and one of the CLI's own transitive dependencies has raised its minimum supported rustc
-above the 1.89.0 this repository pins for the program. The job fails while installing the tool,
-before it ever reaches `anchor build`.
-
-The workflow now installs the CLI from crates.io at the exact pinned version, with `--locked`, and
-uses a separate modern host toolchain for that binary only. The program is still compiled with
-1.89.0. That path was reproduced locally end to end, with a standalone CLI and no version manager
-present, but it has not been confirmed on a GitHub runner yet. Until a run comes back green, the
-honest statement is the one at the top of this file: the build and the tests pass locally with
-the pinned toolchain, and the commands above let you check that for yourself.
+It was red for a while, and not because of the program: the workflow used to build the Anchor CLI
+from its repository HEAD, and one of the CLI's own transitive dependencies raised its minimum
+supported rustc above the 1.89.0 this repository pins. The job died installing the tool, before it
+ever reached `anchor build`. The fix was to install the CLI from crates.io at the exact pinned
+version with `--locked`, and to give that one binary a separate modern host toolchain. The program
+is still compiled with 1.89.0, because `rust-toolchain.toml` applies inside the checkout.
 
 **Lints.** `cargo clippy --all-targets -- -D warnings` now runs before anything else, and the
 tree passes it. `cargo fmt` does **not** run and is not enforced: the program does not currently

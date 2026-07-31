@@ -37,6 +37,17 @@ env:
   # convention solana-verify uses. The escrow binary ends in 15 zero bytes, so
   # this value differs from the one above. Both describe the same artifact.
   EXPECTED_VERIFY_HASH: "2c012e78a567584978e48fe1b20cd641d03389ae2e5944402d31eaa548e29779"
+  # Does the source in this repository still build the bytes that are deployed?
+  #
+  # "false" since the custody window merged: that change is in this tree and has
+  # not been deployed, so a rebuild cannot match the chain and asserting that it
+  # does would keep the job red for a reason everybody already knows.
+  #
+  # This is NOT a switch that silences the job. With "false" the job REQUIRES the
+  # rebuild to differ from the chain, so a deploy that lands without flipping this
+  # back turns the run red instead of quietly passing. Flip it to "true" in the
+  # same commit that deploys, together with the two hashes above.
+  SOURCE_REPRODUCES_CHAIN: "false"
 
 jobs:
   # Cheap and dependency free: does the chain still hold what README.md claims?
@@ -117,6 +128,16 @@ jobs:
             echo "ok   ${label}"
           }
 
+          assert_ne() {
+            local label="$1" left="$2" right="$3"
+            if [ "$left" = "$right" ]; then
+              echo "FAIL ${label}"
+              echo "  both ${left}"
+              exit 1
+            fi
+            echo "ok   ${label}"
+          }
+
           so="target/deploy/${LIBRARY_NAME}.so"
           test -f "$so" || { echo "FAIL ${so} was not produced by the container build"; exit 1; }
 
@@ -136,17 +157,32 @@ jobs:
           echo "on-chain verify hash   ${onchain_verify}"
           echo ""
 
-          # 1. The rebuild reproduces the artifact this repository publishes.
-          assert_eq "rebuilt artifact == the sha256 published in README.md" \
-            "$built_artifact" "$EXPECTED_ARTIFACT_SHA256"
-          # 2. The rebuild reproduces what is actually deployed on devnet. This is
-          #    the comparison the whole job exists for.
-          assert_eq "rebuilt artifact == the program deployed on devnet" \
-            "$built_verify" "$onchain_verify"
-          # 3. And the chain still holds the version README.md describes, so a
-          #    redeploy cannot slip past by matching a rebuild of a newer source.
+          # Checked in every state, and deliberately first: it does not depend on
+          # the source at all, so it still catches an upgrade nobody announced even
+          # while the source is ahead of the chain.
           assert_eq "deployed program == the verify hash published in README.md" \
             "$onchain_verify" "$EXPECTED_VERIFY_HASH"
+
+          if [ "$SOURCE_REPRODUCES_CHAIN" = "true" ]; then
+            # The full claim: this source, rebuilt in the pinned container, is the
+            # artifact published here and the program running on devnet.
+            assert_eq "rebuilt artifact == the sha256 published in README.md" \
+              "$built_artifact" "$EXPECTED_ARTIFACT_SHA256"
+            assert_eq "rebuilt artifact == the program deployed on devnet" \
+              "$built_verify" "$onchain_verify"
+          else
+            # The source is declared ahead of the chain. Equality would be the
+            # surprise here: it would mean the program was deployed and nobody
+            # moved SOURCE_REPRODUCES_CHAIN or the hashes in README.md.
+            assert_ne "source declared ahead of chain, so the rebuild must NOT match devnet" \
+              "$built_verify" "$onchain_verify"
+            echo ""
+            echo "note SOURCE_REPRODUCES_CHAIN=false, so this run does NOT make the"
+            echo "     byte-for-byte claim. What it did check: the container build"
+            echo "     completes and is reproducible enough to produce an artifact,"
+            echo "     and devnet still holds the program README.md describes."
+            echo "     See README.md, Continuous integration."
+          fi
 
       # Only meaningful when everything above passed; on failure the run stops
       # before this and the artifact is not published as if it were verified.
