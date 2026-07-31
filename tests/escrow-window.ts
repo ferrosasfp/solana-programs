@@ -751,7 +751,12 @@ describe("escrow-window — the custody window and the payout freeze", () => {
       "DeadlineNotReached"
     );
 
-    // ...and at the extended deadline the sender recovers, without the authority ever showing up
+    // ...and at the extended deadline the sender recovers, without the authority ever showing up.
+    // The slot bump is NOT decoration: this second refund is identical in shape to the one above,
+    // and bankrun dedups by signature, so without a fresh blockhash it fails as "already
+    // processed" instead of executing. It goes BEFORE the warp because warpTo preserves the
+    // current slot and would be undone otherwise. Caught by this test failing intermittently.
+    await bumpSlot();
     await warpTo(deadline + PAYOUT_EXTENSION_SECS);
     const before = await tokenBalance(senderAta);
     await refund(rid(60), escrowState, vault);
