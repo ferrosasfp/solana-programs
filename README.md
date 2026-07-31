@@ -406,6 +406,35 @@ the handler is idempotent, so nothing ever resets `entries`.
 `amount` in the program today, so this is a guard against future changes rather than a live
 concern.
 
+## Not in this version: the payout freeze
+
+An earlier draft of this change also added `begin_payout` and `abort_payout`, letting the recorded
+authority postpone the deadline once, by one hour, while the fiat leg is in flight, with the escrow
+sitting in a fourth status, `PayoutPending`. It was taken out before review closed. The code is kept
+on the branch `feat/ventana-de-custodia-fase2`.
+
+**Why it was taken out.** The two off-chain consumers pin an IDL whose `EscrowStatus` has exactly
+three variants (`chaski-v3/src/infrastructure/solana/escrow-idl.ts:497` and its twin in
+`wasiai-facilitator/src/chains/escrow-idl.ts`), and a status byte of 3 makes their
+`BorshAccountsCoder` throw. In `chaski-v3` that `coder.decode` sits on the refund path
+(`src/infrastructure/solana-wallet.ts:352`) and is **not** inside a `try`, so the person who sent
+the remittance would be unable to recover their money from the product. The facilitator does catch
+it (`readEscrowState` never throws) and returns `{ ok: false }`, which means it refuses to sign the
+release. The two together are the problem: not releasable and not refundable at the same time. A
+feature meant to protect the payout would have created the one state where nobody can get the funds
+out through the normal paths.
+
+**What has to be true before it can ship**, in this order:
+
+1. Both consumers publish an IDL with the four variants and pin it.
+2. Both handle the new state explicitly: `verifyVault` in the facilitator must decide what
+   `PayoutPending` means for a release it is asked to sign, and `refundEscrow` in `chaski-v3` must
+   decode it without throwing and tell the user what is happening.
+3. Only then does the program add the variant, appended at the end, and only then is it deployed.
+
+`escrow-window.ts` E1b is the tripwire: it asserts that a status byte of 3 does not decode. It goes
+red the day a fourth variant lands, on purpose, as the reminder that steps 1 and 2 come first.
+
 ## Known limitations
 
 We would rather you read these here than find them yourself.
