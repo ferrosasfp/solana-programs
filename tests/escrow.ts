@@ -31,8 +31,8 @@ const DEPOSIT_AMOUNT = ONE_TOKEN; // amount custodied per test
 // Fixture deadline: 2 hours. A literal owned by this test file, picked INSIDE the custody window
 // the program enforces (floor 1 h, ceiling 24 h) and far from both edges, so that no happy-path
 // test here depends on edge arithmetic. The edges are proven separately, in escrow-window.ts.
-// It replaced the old `nowTs + FIXTURE_TTL` (16 min), which is now below the floor: the fixture moved,
-// not one assertion.
+// It replaced a 1000 second literal (16 min), which is now below the floor: the fixture moved, not
+// one assertion. The canary below still asserts the same 154 bytes it always did.
 const FIXTURE_TTL = 7_200n;
 
 describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
