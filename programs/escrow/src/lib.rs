@@ -51,6 +51,28 @@ use anchor_spl::token::{Mint, Token, TokenAccount};
 
 declare_id!("DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x");
 
+// On-chain contact card, readable straight off the deployed binary with
+// `solana-verify get-security-txt` or the Neodyme parser, so a finder does not
+// have to guess who to tell. Compiled out under `no-entrypoint` (the feature used
+// when this crate is pulled in as a CPI dependency) so it ships only in the
+// program itself. Every field name here is validated by the crate's parser, which
+// rejects unknown keys; `contacts` entries must be `type:value`.
+#[cfg(not(feature = "no-entrypoint"))]
+use solana_security_txt::security_txt;
+
+#[cfg(not(feature = "no-entrypoint"))]
+security_txt! {
+    name: "WasiAI escrow",
+    project_url: "https://github.com/ferrosasfp/solana-programs",
+    contacts: "email:fernando@wasiai.io",
+    policy: "https://github.com/ferrosasfp/solana-programs/blob/main/SECURITY.md",
+    preferred_languages: "es,en",
+    source_code: "https://github.com/ferrosasfp/solana-programs",
+    // Stated because "no audit" is itself information a reviewer needs, and an
+    // absent field would read as an oversight rather than as the answer.
+    auditors: "None"
+}
+
 // ---------------------------------------------------------------------------
 // Los rieles de la ventana de custodia
 // ---------------------------------------------------------------------------
