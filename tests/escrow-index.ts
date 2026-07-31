@@ -518,15 +518,13 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
 
   // ---- T4a: no recovery path grants the authority any power (AC-5 / CD-1) ---
 
-  it("4a. IDL: exactly 8 instructions, and neither recovery instruction takes an `authority` account (AC-5/CD-1)", () => {
-    // Went from 6 to 8 with the custody window (begin_payout / abort_payout). This list is the
-    // whole point of the test: a new instruction that nobody reviewed shows up here as a red diff.
+  it("4a. IDL: exactly 6 instructions, and neither new instruction takes an `authority` account (AC-5/CD-1)", () => {
+    // This list is the whole point of the test: an instruction that nobody reviewed shows up here
+    // as a red diff. The custody window added guards, not instructions, so the count did not move.
     const names = (idl as any).instructions
       .map((i: any) => i.name)
       .sort();
     expect(names).to.deep.equal([
-      "abort_payout",
-      "begin_payout",
       "close",
       "deposit",
       "deregister_escrow",
@@ -535,10 +533,6 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
       "release",
     ]);
 
-    // Scoped to the two RECOVERY instructions on purpose: begin_payout and abort_payout do take an
-    // `authority`, and that is the design (it is the same authority already stored in the account
-    // since the deposit, the one that can already call release). The claim being pinned here is
-    // narrower than it used to look: the recovery path grants the authority no power.
     for (const name of ["register_escrow", "deregister_escrow"]) {
       const ix = (idl as any).instructions.find((i: any) => i.name === name);
       assert.isDefined(ix, `${name} must exist in the built IDL`);
