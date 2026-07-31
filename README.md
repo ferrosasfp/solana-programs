@@ -29,6 +29,7 @@ This is a project under implementation, not a finished product.
 | Test coverage | 43 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. |
 | CI | **Green.** clippy, `anchor build` and the 43 tests run on every push. See [Continuous integration](#continuous-integration). |
 | Reproducible build | **Confirmed once, on a machine that is not ours.** A GitHub runner rebuilt the program in the pinned container and reproduced the deployed devnet bytes exactly. Nobody outside this project has repeated it. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
+| On-chain IDL | **Not published.** The explorer shows raw bytes rather than named instructions. The command is written down and needs the upgrade authority to run: see [Publishing the IDL on chain](doc/publish-idl-onchain.md). |
 | Known issues | Written down below, **and two of them are about custody**: a mint with a freeze authority can freeze the vault, and the vault's associated token account can be pre-created by a stranger to block a deposit. See [Known limitations](#known-limitations). |
 
 What we do claim: the custody properties below are enforced by account constraints, and each one
@@ -524,6 +525,25 @@ place to discover that a design needs one more instruction.
 It is also not acceptable for mainnet. Before any mainnet deployment the authority has to move to
 a multisig with a timelock, or the program has to be deployed final after an external audit. We
 are not there yet, and this README will say so until we are.
+
+## Reporting a vulnerability
+
+Email **fernando@wasiai.io**. Please do not open a public issue for an unpatched vulnerability.
+First reply within 48 hours; coordinated disclosure with a 90 day default embargo; **there is no
+bug bounty and we are not going to imply there is one.** Scope, what is explicitly out of scope,
+and what this program is today are in [SECURITY.md](SECURITY.md).
+
+A build of this source also carries the same contact inside the binary, so a finder holding only
+the program id can reach us:
+
+```bash
+solana program dump DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x /tmp/escrow.so --url devnet
+strings -n 4 /tmp/escrow.so | grep -A 16 'BEGIN SECURITY.TXT'
+```
+
+That returns nothing against the currently deployed binary, which predates the
+[`security_txt!`](programs/escrow/src/lib.rs) block. It starts working when this source is
+deployed.
 
 ## The mint
 
