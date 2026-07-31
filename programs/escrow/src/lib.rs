@@ -192,6 +192,100 @@ pub mod escrow {
         Ok(())
     }
 
+    /// Abre la ventana de payout: corre el deadline UNA vez y de forma acotada, y deja registrado
+    /// contra qué referencia se dijo que la pata fiat salía.
+    ///
+    /// LO QUE ESTA INSTRUCCIÓN NO HACE, y hay que leerlo antes de escribir un consumidor:
+    /// **no prueba que la pata fiat ocurrió, y `PayoutPending` no significa "el proveedor pagó".**
+    /// El programa no puede verificar un banco. `fiat_ref` es un `[u8; 32]` OPACO que el programa
+    /// no interpreta jamás: se emite en un evento y nunca se lee. Eso no es una prueba, es una
+    /// atribución: dice quién dijo que iba a salir, cuándo, y contra qué referencia.
+    ///
+    /// Y no agrega ningún privilegio: la firma es la MISMA authority que ya está guardada en la
+    /// cuenta desde el depósito y que ya puede llamar `release`. El privilegio nuevo está dominado
+    /// por el que ya existía: `release` manda el 100% del principal fuera del alcance del sender
+    /// para siempre; esto demora el refund PAYOUT_EXTENSION_SECS y no mueve un token.
+    ///
+    /// Si borrás esta instrucción entera no se abre ningún ataque: sólo se achica el conjunto de
+    /// instantes en que `release` es legal. La garantía del refund no depende de ella.
+    pub fn begin_payout(
+        ctx: Context<BeginPayout>,
+        remittance_id: [u8; 16],
+        fiat_ref: [u8; 32],
+    ) -> Result<()> {
+        let _ = &remittance_id; // lo consume el #[instruction(..)] del Context (seeds del PDA)
+
+        // 1. CHECKS
+        // Sólo desde Deposited: el propio status es el flag de "ya se usó", así que la segunda
+        // llamada revierte acá y no hace falta ni un contador ni un campo nuevo. Un congelamiento
+        // renovable sería un congelamiento eterno con otro nombre.
+        require!(
+            ctx.accounts.escrow_state.status == EscrowStatus::Deposited,
+            ErrorCode::EscrowNotDeposited
+        );
+        // Y sólo ANTES del deadline: nadie puede quitarle al sender un derecho que ya venció. Esta
+        // guarda es la que hace que congelar sólo pueda POSPONER, nunca REVOCAR. También cierra el
+        // ciclo abortar-y-volver-a-congelar, porque `abort_payout` deja el deadline en `now`.
+        let now = Clock::get()?.unix_timestamp;
+        require!(
+            now < ctx.accounts.escrow_state.deadline,
+            ErrorCode::ReleaseWindowClosed
+        );
+
+        // 2. EFFECTS
+        let escrow = &mut ctx.accounts.escrow_state;
+        let old_deadline = escrow.deadline;
+        escrow.deadline = old_deadline.saturating_add(PAYOUT_EXTENSION_SECS);
+        escrow.status = EscrowStatus::PayoutPending;
+
+        emit!(PayoutBegun {
+            escrow: escrow.key(),
+            authority: ctx.accounts.authority.key(),
+            fiat_ref,
+            old_deadline,
+            new_deadline: escrow.deadline,
+        });
+        Ok(())
+    }
+
+    /// Cierra la ventana de payout devolviendo el escrow a `Deposited` con el deadline en `now`.
+    ///
+    /// Es la vuelta RÁPIDA cuando la pata fiat falla: deja el refund habilitado ya, sin esperar a
+    /// que venza la extensión. No hay un `PayoutAborted` en el enum a propósito: `Deposited` con
+    /// deadline vencido es un estado que los lectores viejos entienden perfectamente y que describe
+    /// la verdad, "hay fondos y son recuperables ya". Una variante de más es una rama de más donde
+    /// un decodificador viejo puede tropezar.
+    ///
+    /// No existe un valor del argumento que le permita a la authority quedarse con algo: esto sólo
+    /// puede ACELERAR la devolución al sender. Y si la authority nunca aparece, el camino pasivo
+    /// (la extensión vence y el sender refundea) funciona igual.
+    pub fn abort_payout(ctx: Context<AbortPayout>, remittance_id: [u8; 16]) -> Result<()> {
+        let _ = &remittance_id;
+
+        // 1. CHECKS — sólo desde PayoutPending. Abortar algo que no empezó no tiene significado, y
+        // permitirlo le daría a la authority una forma de anular unilateralmente cualquier remesa
+        // fresca poniéndole el deadline en `now`.
+        require!(
+            ctx.accounts.escrow_state.status == EscrowStatus::PayoutPending,
+            ErrorCode::EscrowNotPayoutPending
+        );
+
+        // 2. EFFECTS
+        let now = Clock::get()?.unix_timestamp;
+        let escrow = &mut ctx.accounts.escrow_state;
+        let old_deadline = escrow.deadline;
+        escrow.deadline = now;
+        escrow.status = EscrowStatus::Deposited;
+
+        emit!(PayoutAborted {
+            escrow: escrow.key(),
+            authority: ctx.accounts.authority.key(),
+            old_deadline,
+            new_deadline: now,
+        });
+        Ok(())
+    }
+
     /// `constraint status != Deposited` (AC-8) va en el Context. Aquí solo cerramos el vault.
     pub fn close(ctx: Context<Close>, remittance_id: [u8; 16]) -> Result<()> {
         let sender_key = ctx.accounts.sender.key();
@@ -323,6 +417,37 @@ impl EscrowStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+/// Se emitió una apertura de ventana de payout.
+///
+/// NO prueba que la pata fiat salió: el programa no puede verificar un banco. Prueba que esta
+/// authority declaró, en este slot, que iba a salir, y contra qué referencia. Cualquier lectura de
+/// este evento como "el proveedor pagó" es una lectura equivocada.
+#[event]
+pub struct PayoutBegun {
+    pub escrow: Pubkey,
+    pub authority: Pubkey,
+    /// Opaco para el programa: se emite y no se interpreta jamás.
+    pub fiat_ref: [u8; 32],
+    pub old_deadline: i64,
+    /// Queda escrito en la cuenta, así que el peor caso de espera del sender lo puede computar
+    /// cualquiera leyéndola, sin confiar en este evento.
+    pub new_deadline: i64,
+}
+
+/// La ventana de payout se cerró sin release: el escrow volvió a `Deposited` con el deadline en
+/// `now`, o sea con el refund del sender habilitado inmediatamente.
+#[event]
+pub struct PayoutAborted {
+    pub escrow: Pubkey,
+    pub authority: Pubkey,
+    pub old_deadline: i64,
+    pub new_deadline: i64,
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
@@ -353,6 +478,8 @@ pub enum ErrorCode {
     DeadlineTooFar,
     #[msg("The release window is closed: the deadline has been reached")]
     ReleaseWindowClosed,
+    #[msg("Escrow is not in the PayoutPending state")]
+    EscrowNotPayoutPending,
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +598,46 @@ pub struct Refund<'info> {
 
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
+}
+
+/// Cuentas de `begin_payout`. MÍNIMO PRIVILEGIO: no aparece ni una cuenta de tokens, porque esta
+/// instrucción no mueve un token. No hay `vault`, no hay ATAs y no hay `token_program`, así que no
+/// existe la CPI que podría transferir algo.
+#[derive(Accounts)]
+#[instruction(remittance_id: [u8; 16])]
+pub struct BeginPayout<'info> {
+    pub authority: Signer<'info>,
+
+    /// CHECK: solo aporta su key a las seeds del PDA; validado por has_one = sender. NO firma.
+    pub sender: SystemAccount<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"escrow", sender.key().as_ref(), remittance_id.as_ref()],
+        bump = escrow_state.bump,
+        has_one = authority,
+        has_one = sender
+    )]
+    pub escrow_state: Account<'info, EscrowState>,
+}
+
+/// Cuentas de `abort_payout`. Espejo exacto de BeginPayout, misma ausencia de cuentas de tokens.
+#[derive(Accounts)]
+#[instruction(remittance_id: [u8; 16])]
+pub struct AbortPayout<'info> {
+    pub authority: Signer<'info>,
+
+    /// CHECK: solo aporta su key a las seeds del PDA; validado por has_one = sender. NO firma.
+    pub sender: SystemAccount<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"escrow", sender.key().as_ref(), remittance_id.as_ref()],
+        bump = escrow_state.bump,
+        has_one = authority,
+        has_one = sender
+    )]
+    pub escrow_state: Account<'info, EscrowState>,
 }
 
 #[derive(Accounts)]

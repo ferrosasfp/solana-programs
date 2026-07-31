@@ -250,6 +250,46 @@ describe("escrow-window — the custody window and the payout freeze", () => {
       .rpc();
   }
 
+  function beginPayout(
+    remittanceId: Uint8Array,
+    escrowState: PublicKey,
+    fiatRef: number[],
+    signer: Keypair = authority
+  ) {
+    return program.methods
+      .beginPayout(Array.from(remittanceId), fiatRef)
+      .accountsPartial({
+        authority: signer.publicKey,
+        sender: sender.publicKey,
+        escrowState,
+      })
+      .signers([signer])
+      .rpc();
+  }
+
+  function abortPayout(
+    remittanceId: Uint8Array,
+    escrowState: PublicKey,
+    signer: Keypair = authority
+  ) {
+    return program.methods
+      .abortPayout(Array.from(remittanceId))
+      .accountsPartial({
+        authority: signer.publicKey,
+        sender: sender.publicKey,
+        escrowState,
+      })
+      .signers([signer])
+      .rpc();
+  }
+
+  function fiatRef(seed: number): number[] {
+    const b = new Array(32).fill(0);
+    b[0] = seed;
+    b[31] = 0xab;
+    return b;
+  }
+
   // bankrun dedups txs by signature: any retry of an identical-shape tx must advance the slot
   // (fresh blockhash) or it "passes" without ever executing.
   async function bumpSlot() {
@@ -298,6 +338,40 @@ describe("escrow-window — the custody window and the payout freeze", () => {
   async function deadlineOf(escrowState: PublicKey): Promise<bigint> {
     const s = await program.account.escrowState.fetch(escrowState);
     return BigInt(s.deadline.toString());
+  }
+
+  async function statusOf(escrowState: PublicKey): Promise<string> {
+    const s = await program.account.escrowState.fetch(escrowState);
+    return statusKey(s.status);
+  }
+
+  // begin_payout through raw ixs so the tx meta (and therefore the emitted event) is observable.
+  async function beginPayoutWithMeta(
+    remittanceId: Uint8Array,
+    escrowState: PublicKey,
+    fiatRefBytes: number[],
+    signer: Keypair = authority
+  ) {
+    const ix = await program.methods
+      .beginPayout(Array.from(remittanceId), fiatRefBytes)
+      .accountsPartial({
+        authority: signer.publicKey,
+        sender: sender.publicKey,
+        escrowState,
+      })
+      .instruction();
+    return processIxs([ix], [signer]);
+  }
+
+  function decodeEvents(meta: any): any[] {
+    const out: any[] = [];
+    for (const line of meta.logMessages ?? []) {
+      const m = /^Program data: (.+)$/.exec(line);
+      if (!m) continue;
+      const ev = program.coder.events.decode(m[1]);
+      if (ev) out.push(ev);
+    }
+    return out;
   }
 
   // ---- setup ---------------------------------------------------------------
@@ -505,5 +579,214 @@ describe("escrow-window — the custody window and the payout freeze", () => {
     expect(await tokenBalance(senderAta)).to.equal(before + DEPOSIT_AMOUNT);
     const state = await program.account.escrowState.fetch(escrowState);
     expect(statusKey(state.status)).to.equal("refunded");
+  });
+
+  // =========================================================================
+  // C. The freeze: it postpones ONCE and it can never revoke
+  // =========================================================================
+
+  it("C1. begin_payout moves the deadline by EXACTLY one hour, once, and moves zero tokens", async () => {
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState, vault } = await deposit(rid(50), DEPOSIT_AMOUNT, deadline);
+    const senderBefore = await tokenBalance(senderAta);
+    const beneficiaryBefore = await tokenBalance(beneficiaryAta);
+
+    await beginPayout(rid(50), escrowState, fiatRef(7));
+
+    // The literal, computed here from this file's own numbers. NOT the program's constant and NOT
+    // the program's formula: multiplying the extension by ten in lib.rs has to turn this red.
+    expect(await deadlineOf(escrowState)).to.equal(
+      nowTs + FIXTURE_TTL + PAYOUT_EXTENSION_SECS
+    );
+    expect(await statusOf(escrowState)).to.equal("payoutPending");
+
+    // not a single token moved: the freeze is a clock operation, not a transfer
+    expect(await tokenBalance(vault)).to.equal(DEPOSIT_AMOUNT);
+    expect(await tokenBalance(senderAta)).to.equal(senderBefore);
+    expect(await tokenBalance(beneficiaryAta)).to.equal(beneficiaryBefore);
+  });
+
+  it("C1b. the frozen escrow_state is STILL exactly 154 bytes (the new variant did not grow the layout)", async () => {
+    const { escrowState } = await deposit(rid(51), DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
+    await beginPayout(rid(51), escrowState, fiatRef(1));
+
+    const acc = await context.banksClient.getAccount(escrowState);
+    assert.isNotNull(acc, "escrow_state must exist while PayoutPending");
+    expect(acc!.data.length).to.equal(154);
+  });
+
+  it("C2. a SECOND begin_payout reverts (EscrowNotDeposited) and the deadline stays at its literal value", async () => {
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState } = await deposit(rid(52), DEPOSIT_AMOUNT, deadline);
+
+    await beginPayout(rid(52), escrowState, fiatRef(1));
+    await bumpSlot(); // fresh blockhash, or bankrun dedups the retry and it "passes" unexecuted
+    await expectRevert(
+      beginPayout(rid(52), escrowState, fiatRef(1)),
+      "EscrowNotDeposited"
+    );
+
+    // pinned against a literal, not against "it did not change much": a renewable freeze is an
+    // eternal freeze with another name, and the way it would show up is here.
+    expect(await deadlineOf(escrowState)).to.equal(
+      nowTs + FIXTURE_TTL + PAYOUT_EXTENSION_SECS
+    );
+  });
+
+  it("C3. begin_payout on an already expired escrow reverts (ReleaseWindowClosed): postponing yes, revoking no", async () => {
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState } = await deposit(rid(53), DEPOSIT_AMOUNT, deadline);
+
+    await warpTo(deadline); // the sender's right has already vested
+    await expectRevert(
+      beginPayout(rid(53), escrowState, fiatRef(1)),
+      "ReleaseWindowClosed"
+    );
+    expect(await deadlineOf(escrowState)).to.equal(deadline);
+    expect(await statusOf(escrowState)).to.equal("deposited");
+  });
+
+  it("C4. begin_payout signed by a third party reverts (ConstraintHasOne)", async () => {
+    const { escrowState } = await deposit(rid(54), DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
+    // the attacker is funded, so the failure is the guard and not a missing fee payer
+    await expectRevert(
+      beginPayout(rid(54), escrowState, fiatRef(1), attacker),
+      "ConstraintHasOne"
+    );
+    expect(await statusOf(escrowState)).to.equal("deposited");
+  });
+
+  it("C5. begin -> abort -> begin: the third one reverts (ReleaseWindowClosed), so the cycle is not a loophole", async () => {
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState } = await deposit(rid(55), DEPOSIT_AMOUNT, deadline);
+
+    await beginPayout(rid(55), escrowState, fiatRef(1));
+    await abortPayout(rid(55), escrowState);
+    // abort left the deadline at `now`, so there is no window left to freeze
+    await bumpSlot();
+    await expectRevert(
+      beginPayout(rid(55), escrowState, fiatRef(1)),
+      "ReleaseWindowClosed"
+    );
+  });
+
+  it("C6. abort_payout puts the deadline at NOW: the refund gets in immediately, for the exact amount", async () => {
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState, vault } = await deposit(rid(56), DEPOSIT_AMOUNT, deadline);
+    await beginPayout(rid(56), escrowState, fiatRef(1));
+
+    const clockNow = (await context.banksClient.getClock()).unixTimestamp;
+    await abortPayout(rid(56), escrowState);
+    expect(await deadlineOf(escrowState)).to.equal(clockNow);
+    expect(await statusOf(escrowState)).to.equal("deposited");
+
+    const before = await tokenBalance(senderAta);
+    await refund(rid(56), escrowState, vault);
+    expect(await tokenBalance(senderAta)).to.equal(before + DEPOSIT_AMOUNT);
+    expect(await tokenBalance(vault)).to.equal(0n);
+    expect(await statusOf(escrowState)).to.equal("refunded");
+  });
+
+  it("C6b. after abort_payout the release is closed too: the authority cannot undo its own abort", async () => {
+    const { escrowState, vault } = await deposit(rid(57), DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
+    await beginPayout(rid(57), escrowState, fiatRef(1));
+    await abortPayout(rid(57), escrowState);
+
+    await expectRevert(release(rid(57), escrowState, vault), "ReleaseWindowClosed");
+    expect(await tokenBalance(vault)).to.equal(DEPOSIT_AMOUNT);
+  });
+
+  it("C7. abort_payout signed by the sender reverts (ConstraintHasOne)", async () => {
+    const { escrowState } = await deposit(rid(58), DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
+    await beginPayout(rid(58), escrowState, fiatRef(1));
+
+    await expectRevert(
+      abortPayout(rid(58), escrowState, sender),
+      "ConstraintHasOne"
+    );
+    expect(await statusOf(escrowState)).to.equal("payoutPending");
+  });
+
+  it("C8. abort_payout on a plain Deposited escrow reverts (EscrowNotPayoutPending)", async () => {
+    // Aborting something that never began has no meaning, and allowing it would hand the authority
+    // a way to unilaterally void any fresh remittance by parking its deadline at `now`.
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState } = await deposit(rid(59), DEPOSIT_AMOUNT, deadline);
+
+    await expectRevert(
+      abortPayout(rid(59), escrowState),
+      "EscrowNotPayoutPending"
+    );
+    expect(await deadlineOf(escrowState)).to.equal(deadline);
+  });
+
+  it("C9. a frozen escrow is still refundable once the extended deadline passes (the funds are never trapped)", async () => {
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState, vault } = await deposit(rid(60), DEPOSIT_AMOUNT, deadline);
+    await beginPayout(rid(60), escrowState, fiatRef(1));
+
+    // one second before the extended deadline the freeze is still holding...
+    await warpTo(deadline + PAYOUT_EXTENSION_SECS - 1n);
+    await expectRevert(
+      refund(rid(60), escrowState, vault),
+      "DeadlineNotReached"
+    );
+
+    // ...and at the extended deadline the sender recovers, without the authority ever showing up
+    await warpTo(deadline + PAYOUT_EXTENSION_SECS);
+    const before = await tokenBalance(senderAta);
+    await refund(rid(60), escrowState, vault);
+    expect(await tokenBalance(senderAta)).to.equal(before + DEPOSIT_AMOUNT);
+    expect(await statusOf(escrowState)).to.equal("refunded");
+  });
+
+  it("C10. a frozen escrow can still be released inside its window (PayoutPending is an OPEN state)", async () => {
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState, vault } = await deposit(rid(61), DEPOSIT_AMOUNT, deadline);
+    await beginPayout(rid(61), escrowState, fiatRef(1));
+
+    await warpTo(deadline + PAYOUT_EXTENSION_SECS - 1n);
+    await release(rid(61), escrowState, vault);
+    expect(await tokenBalance(beneficiaryAta)).to.equal(DEPOSIT_AMOUNT);
+    expect(await statusOf(escrowState)).to.equal("released");
+  });
+
+  it("C11. the event carries the opaque fiat_ref and BOTH deadlines (attribution, not proof)", async () => {
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState } = await deposit(rid(62), DEPOSIT_AMOUNT, deadline);
+    const ref = fiatRef(0x5c);
+
+    const meta = await beginPayoutWithMeta(rid(62), escrowState, ref);
+    const events = decodeEvents(meta);
+    const begun = events.find((e) => e.name === "payoutBegun" || e.name === "PayoutBegun");
+    assert.isDefined(begun, "begin_payout must emit its event");
+
+    expect(Array.from(begun.data.fiatRef as number[])).to.deep.equal(ref);
+    expect(BigInt(begun.data.oldDeadline.toString())).to.equal(deadline);
+    expect(BigInt(begun.data.newDeadline.toString())).to.equal(
+      deadline + PAYOUT_EXTENSION_SECS
+    );
+    expect(begun.data.authority.toBase58()).to.equal(authority.publicKey.toBase58());
+    expect(begun.data.escrow.toBase58()).to.equal(escrowState.toBase58());
+  });
+
+  it("C12. front-running the freeze with a refund changes nothing: whoever arrives first, only one gets in", async () => {
+    const deadline = nowTs + FIXTURE_TTL;
+    const a = await deposit(rid(63), DEPOSIT_AMOUNT, deadline);
+    const b = await deposit(rid(64), DEPOSIT_AMOUNT, deadline);
+
+    // before the deadline: the sender's refund is the one that bounces
+    await warpTo(deadline - 1n);
+    await expectRevert(refund(rid(63), a.escrowState, a.vault), "DeadlineNotReached");
+    await beginPayout(rid(63), a.escrowState, fiatRef(1));
+
+    // at or after the deadline: the freeze is the one that bounces
+    await warpTo(deadline);
+    await expectRevert(
+      beginPayout(rid(64), b.escrowState, fiatRef(1)),
+      "ReleaseWindowClosed"
+    );
+    await refund(rid(64), b.escrowState, b.vault);
+    expect(await statusOf(b.escrowState)).to.equal("refunded");
   });
 });
