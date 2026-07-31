@@ -631,6 +631,57 @@ check was left out and written down here instead. Adding it means one formatting
 
 Devnet only. The script pins the cluster explicitly so an ambient CLI config cannot redirect it.
 
+### The size preflight
+
+`anchor deploy` on an upgradeable program writes into the ProgramData account that already exists.
+That account was sized when the program was first deployed and **does not grow by itself**. The
+binary in this tree no longer fits in it:
+
+| | |
+|---|---|
+| ProgramData account | `UKjCxFASvoGPp95tdPDH2F3vyyGnQLHAcKiUGpVDpaR` |
+| Bytes allocated | 262,613 |
+| Loader header | 45 |
+| Usable for the binary | 262,568 |
+| This tree's `escrow.so` | 270,712 |
+| Missing | **8,144** |
+
+Without the extend, the deploy fails inside the loader with a message that never mentions the size,
+after uploading the whole binary, and leaves a buffer account holding your SOL. So the deploy script
+now runs a read only check first and refuses to continue:
+
+```bash
+python3 scripts/programdata-capacity.py \
+  --program-id DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x \
+  --artifact target/deploy/escrow.so --url devnet
+```
+
+It signs nothing and sends no transaction. When the binary does not fit it prints the command,
+already filled in:
+
+```bash
+solana program extend DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x 8144 --url devnet
+```
+
+That number is the exact deficit, which leaves zero headroom: the next build that grows by a byte
+needs another extend. Passing a larger number is fine, it costs rent for the added bytes and cannot
+be undone.
+
+The numbers above were read from devnet. Re-run the script rather than trusting the table: the
+artifact changes with every build.
+
+### The account list of `close` has no safe deployment order
+
+The vault sweep added a `sender_ata` account to `close`. There is **no ordering of the program and
+client deploys that avoids a break**: a new client against the old program sends an account the old
+program does not expect, and an old client against the new program omits an account the new program
+requires. Both directions fail.
+
+What makes it tolerable today, and it is a fact worth checking rather than a promise: **no consumer
+builds `close` at all right now.** It is a forward constraint on whoever writes the first one, not a
+live cut. If that changes, the client and the program have to be released together, with the escrow
+lifecycle drained in between.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
