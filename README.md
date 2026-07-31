@@ -631,6 +631,37 @@ check was left out and written down here instead. Adding it means one formatting
 
 Devnet only. The script pins the cluster explicitly so an ambient CLI config cannot redirect it.
 
+### Before upgrading the deployed program
+
+This version makes `release` illegal from the deadline on. That is the point of the change, and it
+is also **a one way door for escrows that are already on chain**. An account sitting in `Deposited`
+with its deadline already past can be released by its authority today; at the instant of the upgrade
+it cannot be released at all, and the only exit left is the refund, which only the sender can sign.
+
+The funds are never lost. What changes, with no way back, is who holds the exit. That should be a
+decision somebody took, not a side effect somebody discovered afterwards.
+
+So, before running the deploy:
+
+```bash
+python3 scripts/list-live-escrows.py --url devnet
+```
+
+Read only: it signs nothing and sends no transaction. It lists every `EscrowState` account of the
+program, decodes it, and flags the ones that are `Deposited` with an expired deadline. Pass
+`--exit-nonzero-if-blocking` to use it as a gate in a script.
+
+For each account it flags, do one of two things, and write down which:
+
+1. **Drain it.** Either the authority releases it (still possible until the upgrade lands) or the
+   sender refunds it. Both are already reachable with the deployed program. Re-run the script and
+   confirm the list is empty.
+2. **Decide the refund is the right outcome**, and record the decision, including who was told.
+
+Read at the time of writing, on devnet: four `EscrowState` accounts exist, three are terminal and
+one is blocking, `BmHDdjKLCJXcdzd8CqbHaeRWY9utbviZduXhbnH5Jm9F`, holding 10.000000 units of the test
+mint with a deadline nine days past. Do not trust that sentence, run the script.
+
 ### The size preflight
 
 `anchor deploy` on an upgradeable program writes into the ProgramData account that already exists.
