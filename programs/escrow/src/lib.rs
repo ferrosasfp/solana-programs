@@ -4,6 +4,51 @@ use anchor_spl::token::{Mint, Token, TokenAccount};
 
 declare_id!("DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x");
 
+// ---------------------------------------------------------------------------
+// Los rieles de la ventana de custodia
+// ---------------------------------------------------------------------------
+//
+// Estas dos constantes son los RIELES EXTERIORES del plazo de custodia: acotan qué deadline puede
+// entrar. El valor OPERATIVO de todos los días (el que elige el cliente al depositar) lo fijan los
+// consumidores adentro de estos rieles; acá sólo está el límite duro que un redespliegue puede
+// mover y nada más.
+//
+// ⚠️ LOS DOS NÚMEROS SON PROVISORIOS. Decisión del founder del 2026-07-31, tomada SIN la medición
+// que debería fijarlos. Lo que los cambiaría es UNA cosa concreta y sólo una: **la medición del
+// tiempo real que tarda la pata fiat del proveedor cuando esté conectado de verdad**, extremo a
+// extremo, desde que se despacha la orden hasta que se puede confirmar el desembolso. Hoy ese
+// número no existe: no está medido, está supuesto.
+//
+// Y hay un resultado de esa medición que NO se resuelve tocando una constante: **si el peor tiempo
+// medido del proveedor supera MAX_CUSTODY_SECS (24 h), subir el techo es la respuesta equivocada.**
+// Eso sería un hallazgo de producto, no de configuración, y significa que el producto le está
+// pidiendo a una persona que le mandó plata a su familia que espere más de un día hábil sin poder
+// recuperarla ni saber si llegó. La decisión ahí es de producto (cambiar de proveedor, partir el
+// flujo, o declarar el plazo por adelantado), y hay que tomarla antes de tocar este archivo.
+
+/// Piso de la ventana de custodia: 1 hora.
+///
+/// Por qué existe: un deadline demasiado corto reabre exactamente la carrera que este programa
+/// viene a matar. Debajo de una hora el operador no llega a completar la pata fiat, así que el
+/// release le queda estructuralmente fuera de alcance y el sender termina refundeando remesas que
+/// sí se estaban pagando. PROVISORIO: ver la nota de arriba.
+///
+/// LA OTRA MITAD DE ESTE NÚMERO, que hay que leer junto con la de arriba: el piso es también el
+/// tiempo MÍNIMO durante el cual el sender NO puede recuperar su plata. `refund` exige
+/// `now >= deadline` y el deadline no puede entrar por debajo de este piso, así que un depósito
+/// hecho por error queda inmovilizado por lo menos una hora. Con el TTL de 10 minutos que usa hoy
+/// el cliente ese piso multiplica por seis la espera del sender. Subir el piso mejora el margen del
+/// operador y empeora exactamente esto, en la misma proporción y sin compensación.
+pub const MIN_CUSTODY_SECS: i64 = 3_600;
+
+/// Techo de la ventana de custodia: 24 horas.
+///
+/// Por qué existe: es la exposición MÁXIMA del sender si el operador desaparece justo después del
+/// depósito. 24 h es el estándar de día hábil siguiente en remesas: cubre un release manual y un
+/// proveedor que liquida por lotes, y sigue siendo lo que una persona tolera. PROVISORIO: ver la
+/// nota de arriba, incluido el caso en que la medición lo supere.
+pub const MAX_CUSTODY_SECS: i64 = 86_400;
+
 #[program]
 pub mod escrow {
     use super::*;
@@ -22,9 +67,19 @@ pub mod escrow {
 
         // 1. CHECKS
         require!(amount > 0, ErrorCode::ZeroAmount);
+        // La ventana de custodia se acota por los DOS lados. Los dos lados de cada comparación son
+        // independientes: el `deadline` viene en los args de la ix y el `now` sale del Clock del
+        // validador, que ningún cliente puede escribir. `saturating_add` porque el perfil release
+        // tiene `overflow-checks = true`: sin él, un `now` cerca de i64::MAX haría panic en vez de
+        // devolver el error, y un panic no es un rechazo legible.
+        let now = Clock::get()?.unix_timestamp;
         require!(
-            deadline > Clock::get()?.unix_timestamp,
-            ErrorCode::InvalidDeadline
+            deadline >= now.saturating_add(MIN_CUSTODY_SECS),
+            ErrorCode::DeadlineTooSoon
+        );
+        require!(
+            deadline <= now.saturating_add(MAX_CUSTODY_SECS),
+            ErrorCode::DeadlineTooFar
         );
 
         // 2. EFFECTS
@@ -51,11 +106,28 @@ pub mod escrow {
 
     /// Autorización (AC-6) y destino fijo (AC-1) son DECLARATIVOS vía `has_one` en el Context,
     /// no `require!` imperativos. `has_one = authority` -> ConstraintHasOne (2001) si firma otro.
+    ///
+    /// LA INVARIANTE, que es lo único que hay que atacar para tumbar este programa: para toda
+    /// cuenta y todo instante, a lo sumo UNA de `release` y `refund` puede entrar.
+    ///
+    /// Que `release` y `refund` exijan exactamente el mismo estado (`Deposited`) no los vuelve
+    /// intercambiables: lo que los separa es el RELOJ, no el estado. `release` sólo entra con
+    /// `now < deadline` y `refund` sólo con `now >= deadline`, así que para todo instante a lo sumo
+    /// uno de los dos es legal.
     pub fn release(ctx: Context<Release>, remittance_id: [u8; 16]) -> Result<()> {
         // 1. CHECKS
         require!(
             ctx.accounts.escrow_state.status == EscrowStatus::Deposited,
             ErrorCode::EscrowNotDeposited
+        );
+        // LA guarda que faltaba. Sin esto, "pasado el plazo recuperás tu plata" es falso: el
+        // release seguía siendo legal para siempre, así que el sender que va a refundear no ejerce
+        // un derecho, entra en una carrera contra alguien que puede reintentar indefinidamente.
+        // El orden importa: el chequeo de estado va PRIMERO para que un segundo release sobre un
+        // escrow ya terminal siga reportando EscrowNotDeposited y no la ventana.
+        require!(
+            Clock::get()?.unix_timestamp < ctx.accounts.escrow_state.deadline,
+            ErrorCode::ReleaseWindowClosed
         );
 
         // 2. EFFECTS (ANTES de la CPI — CEI / AC-2)
@@ -87,6 +159,11 @@ pub mod escrow {
 
     pub fn refund(ctx: Context<Refund>, remittance_id: [u8; 16]) -> Result<()> {
         // 1. CHECKS
+        // Igualdad contra la ÚNICA variante no terminal, no una negación ni un predicado de
+        // conjunto: desde un estado terminal el vault ya se vació, pero cualquiera puede volver a
+        // fondearlo (es una ATA de dirección derivable), y con el vault lleno el que rechaza tiene
+        // que ser esta línea y no SPL. Cubierto por escrow-window.ts C1..C4, que refondean el vault
+        // a propósito antes de intentarlo.
         require!(
             ctx.accounts.escrow_state.status == EscrowStatus::Deposited,
             ErrorCode::EscrowNotDeposited
@@ -123,7 +200,22 @@ pub mod escrow {
         Ok(())
     }
 
-    /// `constraint status != Deposited` (AC-8) va en el Context. Aquí solo cerramos el vault.
+    /// La lista blanca de estados terminales (AC-8) va en el Context. Acá barremos el vault y lo
+    /// cerramos.
+    ///
+    /// EL BARRIDO, y decir exactamente qué barre: `CloseAccount` de SPL exige saldo CERO. Como el
+    /// vault es una ATA con dirección derivable, cualquiera puede mandarle 1 unidad atómica después
+    /// del release y trabar el cierre para siempre, dejando muerto el rent de dos cuentas. Esta
+    /// instrucción manda al `sender_ata` **todo `vault.amount`, sin cota superior**, y recién ahí
+    /// cierra. No es "el polvo": si un tercero deposita mil tokens en el vault de un escrow ya
+    /// terminal, los mil se los lleva el sender. Es inofensivo (el principal ya se pagó y quien
+    /// dona un token a una cuenta ajena lo está regalando), pero quien lea "polvo" dimensiona mal
+    /// la instrucción, así que queda escrito el caso concreto que lo refutaría.
+    ///
+    /// Por qué el remanente va al SENDER y no al beneficiary: llegado este punto el escrow ya está
+    /// en un estado terminal, o sea que el monto custodiado ya se pagó completo a quien
+    /// correspondía. Lo que quede acá no es parte del principal, y el sender es quien pagó el rent
+    /// de las dos cuentas que se están cerrando.
     pub fn close(ctx: Context<Close>, remittance_id: [u8; 16]) -> Result<()> {
         let sender_key = ctx.accounts.sender.key();
         let bump = ctx.accounts.escrow_state.bump;
@@ -133,6 +225,22 @@ pub mod escrow {
             remittance_id.as_ref(),
             &[bump],
         ]];
+
+        let remaining = ctx.accounts.vault.amount;
+        if remaining > 0 {
+            let sweep_accounts = anchor_spl::token::Transfer {
+                from: ctx.accounts.vault.to_account_info(),
+                to: ctx.accounts.sender_ata.to_account_info(),
+                authority: ctx.accounts.escrow_state.to_account_info(),
+            };
+            let sweep_ctx = CpiContext::new_with_signer(
+                ctx.accounts.token_program.key(),
+                sweep_accounts,
+                signer_seeds,
+            );
+            anchor_spl::token::transfer(sweep_ctx, remaining)?;
+        }
+
         let cpi_accounts = anchor_spl::token::CloseAccount {
             account: ctx.accounts.vault.to_account_info(),
             destination: ctx.accounts.sender.to_account_info(),
@@ -223,9 +331,28 @@ pub struct EscrowState {
 
 #[derive(AnchorSerialize, AnchorDeserialize, InitSpace, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EscrowStatus {
-    Deposited, // 0
+    Deposited, // 0 — el único estado NO terminal
     Released,  // 1 — terminal
     Refunded,  // 2 — terminal
+    // EXACTAMENTE TRES VARIANTES, y el número es parte del contrato con los consumidores: el IDL
+    // que pinnean chaski-v3 y el facilitator declara estas tres, así que un byte de status 4º haría
+    // que su `BorshAccountsCoder` tire `TypeError` al decodificar la cuenta. Una variante nueva
+    // (por ejemplo el `PayoutPending` de la fase 2, ver README) se apendiza al FINAL —los
+    // discriminantes 0, 1 y 2 están escritos en cuentas VIVAS y moverlos le cambia el significado a
+    // bytes que ya existen— y NO se despliega hasta que los dos consumidores publiquen el IDL nuevo
+    // y traten el estado nuevo. El test E1b de escrow-window.ts es el alambre de ese contrato.
+}
+
+impl EscrowStatus {
+    /// Estados TERMINALES: la plata ya salió del vault y la cuenta se puede cerrar.
+    ///
+    /// Lista blanca a propósito y no `!= Deposited`, aunque HOY las dos expresiones den lo mismo
+    /// (el enum tiene una sola variante no terminal). La diferencia aparece el día que se agregue
+    /// otra variante no terminal: la negación dejaría cerrar esa cuenta con el vault lleno y la
+    /// lista blanca no. Escribirlo así es lo que hace que agregar un estado no abra un agujero.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, EscrowStatus::Released | EscrowStatus::Refunded)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +363,9 @@ pub enum EscrowStatus {
 pub enum ErrorCode {
     #[msg("Deposit amount must be greater than zero")]
     ZeroAmount,
+    /// Ya no la tira nadie: el piso de la ventana de custodia (`DeadlineTooSoon`) es estrictamente
+    /// más fuerte que "el deadline está en el futuro". Se conserva la VARIANTE, no su uso, porque
+    /// los códigos de Anchor son posicionales desde 6000 y borrarla renumeraría todo lo que sigue.
     #[msg("Deadline must be in the future")]
     InvalidDeadline,
     #[msg("Escrow is not in the Deposited state")]
@@ -249,6 +379,13 @@ pub enum ErrorCode {
     // cualquier cliente que mapee códigos. Debe quedar 6005.
     #[msg("Escrow index is full for this sender")]
     EscrowIndexFull,
+    // Apendizados al FINAL por el mismo motivo que EscrowIndexFull: 6006, 6007 y 6008 en ese orden.
+    #[msg("Deadline is below the minimum custody window")]
+    DeadlineTooSoon,
+    #[msg("Deadline is above the maximum custody window")]
+    DeadlineTooFar,
+    #[msg("The release window is closed: the deadline has been reached")]
+    ReleaseWindowClosed,
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +398,23 @@ pub struct Deposit<'info> {
     #[account(mut)]
     pub sender: Signer<'info>,
 
+    /// Acepta CUALQUIER mint, y es una decisión, no un olvido. El programa es infraestructura de
+    /// escrow genérica; "qué token vale un dólar" es política de producto y vive en el componente
+    /// que está en el camino crítico de todos los depósitos (el co-firmante off-chain, que se
+    /// niega a firmar un depósito con un mint inesperado). Clavarlo acá obligaría a dos builds,
+    /// dos IDL, dos hashes pinneados y un redespliegue para rotarlo.
+    ///
+    /// LA CONDICIÓN QUE DA VUELTA ESTA DECISIÓN, escrita para que se pueda comprobar: el día que
+    /// exista un barrido que descubra depósitos on-chain y los tome por buenos SIN esa co-firma,
+    /// el mint tiene que clavarse acá, porque ahí un depósito auto-fondeado con el mint de un
+    /// atacante entraría a un camino de producto. Los enumeradores de hoy (EscrowIndex y el
+    /// resolver de ids) sólo alimentan el refund, que es inofensivo.
+    ///
+    /// LO QUE ESTA DECISIÓN SE LLEVA PUESTO, y es el único atrapamiento permanente que conocemos:
+    /// el vault es una token account SPL común de este mint. Si el mint tiene FREEZE AUTHORITY (el
+    /// USDC real la tiene), esa authority puede congelar el vault, y una token account congelada
+    /// rechaza toda transferencia: ni `release` ni `refund` pueden mover un token, sin importar el
+    /// deadline, la firma ni el estado. Elegir el mint es elegir a qué freeze authority te exponés.
     pub mint: Account<'info, Mint>,
 
     #[account(
@@ -272,6 +426,11 @@ pub struct Deposit<'info> {
     )]
     pub escrow_state: Account<'info, EscrowState>,
 
+    /// `init` y no `init_if_needed`, y eso tiene un costo conocido: la dirección de esta ATA es
+    /// derivable antes del depósito, así que cualquiera que vea o adivine los 16 bytes del
+    /// `remittance_id` puede crearla primero por ~0.002 SOL y dejar ese par (sender, remittance_id)
+    /// sin poder depositar nunca. No hay fondos en riesgo y la salida es usar otro id. Es
+    /// PRE-EXISTENTE, no lo introduce la ventana de custodia, y está escrito en el README.
     #[account(
         init,
         payer = sender,
@@ -383,7 +542,11 @@ pub struct Close<'info> {
         bump = escrow_state.bump,
         has_one = sender,
         has_one = mint,
-        constraint = escrow_state.status != EscrowStatus::Deposited @ ErrorCode::EscrowNotTerminal,
+        // LISTA BLANCA, no `!= Deposited`, aunque hoy den lo mismo. Ver `is_terminal`: la
+        // diferencia aparece el día que exista otra variante no terminal, donde la negación
+        // dejaría cerrar esa cuenta con el vault LLENO y el único que frenaría sería SPL, y sólo
+        // mientras el vault no esté vacío.
+        constraint = escrow_state.status.is_terminal() @ ErrorCode::EscrowNotTerminal,
         close = sender
     )]
     pub escrow_state: Account<'info, EscrowState>,
@@ -394,6 +557,18 @@ pub struct Close<'info> {
         associated_token::authority = escrow_state
     )]
     pub vault: Account<'info, TokenAccount>,
+
+    /// Destino del barrido. Cuenta NUEVA en esta instrucción: los consumidores que hoy arman el
+    /// `close` con la lista vieja tienen que agregarla. No existe orden de despliegue seguro entre
+    /// programa y cliente para este cambio (ver README, "Deploying"): las dos combinaciones cruzadas
+    /// fallan. Hoy ningún consumidor construye `close`, así que es una restricción hacia adelante y
+    /// no un corte en vivo.
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = sender
+    )]
+    pub sender_ata: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
 }

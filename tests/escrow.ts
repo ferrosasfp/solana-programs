@@ -28,6 +28,13 @@ const DECIMALS = 6;
 const ONE_TOKEN = 1_000_000n; // 1.0 token @ 6 decimals
 const DEPOSIT_AMOUNT = ONE_TOKEN; // amount custodied per test
 
+// Fixture deadline: 2 hours. A literal owned by this test file, picked INSIDE the custody window
+// the program enforces (floor 1 h, ceiling 24 h) and far from both edges, so that no happy-path
+// test here depends on edge arithmetic. The edges are proven separately, in escrow-window.ts.
+// It replaced a 1000 second literal (16 min), which is now below the floor: the fixture moved, not
+// one assertion. The canary below still asserts the same 154 bytes it always did.
+const FIXTURE_TTL = 7_200n;
+
 describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
   let context: ProgramTestContext;
   let provider: BankrunProvider;
@@ -275,7 +282,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
   // runbook-R1-deploy-devnet.md, step 0.
   it("1a. CANARY: a deposit produces an escrow_state of EXACTLY 154 bytes (AC-6/CD-7)", async () => {
     const id = rid(11);
-    const { escrowState } = await deposit(id, DEPOSIT_AMOUNT, nowTs + 1000n);
+    const { escrowState } = await deposit(id, DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
 
     const acc = await context.banksClient.getAccount(escrowState);
     assert.isNotNull(acc, "escrow_state must exist after deposit");
@@ -286,7 +293,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
 
   it("1. deposit then release pays exactly the recorded beneficiary; vault drained; status Released", async () => {
     const id = rid(1);
-    const deadline = nowTs + 1000n;
+    const deadline = nowTs + FIXTURE_TTL;
     const { escrowState, vault } = await deposit(id, DEPOSIT_AMOUNT, deadline);
 
     expect(await tokenBalance(vault)).to.equal(DEPOSIT_AMOUNT);
@@ -318,7 +325,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
 
   it("2. release signed by a non-authority reverts (ConstraintHasOne); vault untouched", async () => {
     const id = rid(2);
-    const deadline = nowTs + 1000n;
+    const deadline = nowTs + FIXTURE_TTL;
     const { escrowState, vault } = await deposit(id, DEPOSIT_AMOUNT, deadline);
 
     await expectRevert(
@@ -347,7 +354,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
 
   it("3. refund before the deadline reverts (DeadlineNotReached); vault untouched", async () => {
     const id = rid(3);
-    const deadline = nowTs + 1000n;
+    const deadline = nowTs + FIXTURE_TTL;
     const { escrowState, vault } = await deposit(id, DEPOSIT_AMOUNT, deadline);
 
     await expectRevert(
@@ -374,7 +381,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
 
   it("4. refund after the deadline succeeds for the sender alone (authority never signs); status Refunded", async () => {
     const id = rid(4);
-    const deadline = nowTs + 1000n;
+    const deadline = nowTs + FIXTURE_TTL;
     const { escrowState, vault } = await deposit(id, DEPOSIT_AMOUNT, deadline);
 
     const before = await tokenBalance(senderAta);
@@ -405,7 +412,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
   it("5. a second terminal transition reverts (EscrowNotDeposited) after release and after refund", async () => {
     // 5a. deposit -> release OK, then a second release reverts
     const idA = rid(50);
-    const dlA = nowTs + 1000n;
+    const dlA = nowTs + FIXTURE_TTL;
     const a = await deposit(idA, DEPOSIT_AMOUNT, dlA);
     const releaseAccounts = {
       authority: authority.publicKey,
@@ -435,7 +442,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
 
     // 5b. deposit -> refund OK, then release reverts
     const idB = rid(51);
-    const dlB = nowTs + 1000n;
+    const dlB = nowTs + FIXTURE_TTL;
     const b = await deposit(idB, DEPOSIT_AMOUNT, dlB);
     await warpTo(dlB + 1n);
     await program.methods
@@ -475,7 +482,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
 
   it("6. a second deposit on the same [sender, remittance_id] seeds reverts (account already in use)", async () => {
     const id = rid(6);
-    const deadline = nowTs + 1000n;
+    const deadline = nowTs + FIXTURE_TTL;
     await deposit(id, DEPOSIT_AMOUNT, deadline);
 
     // Second deposit reuses the same [sender, remittance_id] seeds but is a
@@ -491,7 +498,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
 
   it("7. close while Deposited reverts (EscrowNotTerminal) — AC-8", async () => {
     const id = rid(7);
-    const deadline = nowTs + 1000n;
+    const deadline = nowTs + FIXTURE_TTL;
     const { escrowState, vault } = await deposit(id, DEPOSIT_AMOUNT, deadline);
 
     await expectRevert(
@@ -502,6 +509,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
           mint,
           escrowState,
           vault,
+          senderAta, // sweep destination, new account in this instruction
           tokenProgram: TOKEN_PROGRAM_ID,
         })
         .signers([sender])
@@ -512,7 +520,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
 
   it("8. close after release returns rent + vault to sender, and the same seeds are reusable via a fresh deposit (anti-revival)", async () => {
     const id = rid(8);
-    const deadline = nowTs + 1000n;
+    const deadline = nowTs + FIXTURE_TTL;
     const first = await deposit(id, DEPOSIT_AMOUNT, deadline);
 
     await program.methods
@@ -538,6 +546,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
         mint,
         escrowState: first.escrowState,
         vault: first.vault,
+        senderAta, // sweep destination, new account in this instruction
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .signers([sender])
@@ -558,7 +567,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
 
   it("9. deposit with amount == 0 reverts (ZeroAmount)", async () => {
     const id = rid(9);
-    const deadline = nowTs + 1000n;
+    const deadline = nowTs + FIXTURE_TTL;
     await expectRevert(deposit(id, 0n, deadline), "ZeroAmount");
   });
 });
