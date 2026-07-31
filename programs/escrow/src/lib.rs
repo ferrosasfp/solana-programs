@@ -162,7 +162,7 @@ pub mod escrow {
         escrow.status = EscrowStatus::Deposited;
         escrow.bump = ctx.bumps.escrow_state;
 
-        // 3. INTERACTIONS — transfer-in: sender firma DIRECTO (no PDA). sender_ata -> vault.
+        // 3. INTERACTIONS: transfer-in, sender firma DIRECTO (no PDA). sender_ata -> vault.
         let cpi_accounts = anchor_spl::token::Transfer {
             from: ctx.accounts.sender_ata.to_account_info(),
             to: ctx.accounts.vault.to_account_info(),
@@ -199,10 +199,10 @@ pub mod escrow {
             ErrorCode::ReleaseWindowClosed
         );
 
-        // 2. EFFECTS (ANTES de la CPI — CEI / AC-2)
+        // 2. EFFECTS (ANTES de la CPI: CEI / AC-2)
         ctx.accounts.escrow_state.status = EscrowStatus::Released;
 
-        // 3. INTERACTIONS — CPI firmada por el PDA: vault -> beneficiary_ata, por escrow_state.amount
+        // 3. INTERACTIONS: CPI firmada por el PDA, vault -> beneficiary_ata, por escrow_state.amount
         let sender_key = ctx.accounts.sender.key();
         let bump = ctx.accounts.escrow_state.bump;
         let amount = ctx.accounts.escrow_state.amount;
@@ -242,10 +242,10 @@ pub mod escrow {
             ErrorCode::DeadlineNotReached
         );
 
-        // 2. EFFECTS (ANTES — CEI / AC-2)
+        // 2. EFFECTS (ANTES de la CPI: CEI / AC-2)
         ctx.accounts.escrow_state.status = EscrowStatus::Refunded;
 
-        // 3. INTERACTIONS — CPI firmada por el PDA: vault -> sender_ata, por escrow_state.amount
+        // 3. INTERACTIONS: CPI firmada por el PDA, vault -> sender_ata, por escrow_state.amount
         let sender_key = ctx.accounts.sender.key();
         let bump = ctx.accounts.escrow_state.bump;
         let amount = ctx.accounts.escrow_state.amount;
@@ -334,7 +334,7 @@ pub mod escrow {
         let index = &mut ctx.accounts.escrow_index;
         require!(index.entries.len() < MAX_ENTRIES, ErrorCode::EscrowIndexFull);
 
-        // 2. EFFECTS — escrituras IDEMPOTENTES del header (CD-9): `sender` y `bump` están fijados
+        // 2. EFFECTS: escrituras IDEMPOTENTES del header (CD-9), `sender` y `bump` están fijados
         // por las seeds y `version` es una constante ⇒ re-ejecutar esto no puede resetear nada.
         index.sender = ctx.accounts.sender.key();
         index.version = ESCROW_INDEX_VERSION;
@@ -406,9 +406,9 @@ pub enum EscrowStatus {
     // EXACTAMENTE TRES VARIANTES, y el número es parte del contrato con los consumidores: el IDL
     // que pinnean chaski-v3 y el facilitator declara estas tres, así que un byte de status 4º haría
     // que su `BorshAccountsCoder` tire `TypeError` al decodificar la cuenta. Una variante nueva
-    // (por ejemplo el `PayoutPending` de la fase 2, ver README) se apendiza al FINAL —los
+    // (por ejemplo el `PayoutPending` de la fase 2, ver README) se apendiza al FINAL (los
     // discriminantes 0, 1 y 2 están escritos en cuentas VIVAS y moverlos le cambia el significado a
-    // bytes que ya existen— y NO se despliega hasta que los dos consumidores publiquen el IDL nuevo
+    // bytes que ya existen) y NO se despliega hasta que los dos consumidores publiquen el IDL nuevo
     // y traten el estado nuevo. El test E1b de escrow-window.ts es el alambre de ese contrato.
 }
 
