@@ -4,6 +4,51 @@ use anchor_spl::token::{Mint, Token, TokenAccount};
 
 declare_id!("DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x");
 
+// ---------------------------------------------------------------------------
+// Los rieles de la ventana de custodia
+// ---------------------------------------------------------------------------
+//
+// Estas tres constantes son los RIELES EXTERIORES del plazo de custodia: acotan qué deadline puede
+// entrar y cuánto se puede correr una sola vez. El valor OPERATIVO de todos los días (el que elige
+// el cliente al depositar) lo fijan los consumidores adentro de estos rieles; acá sólo está el
+// límite duro que un redespliegue puede mover y nada más.
+//
+// ⚠️ LOS TRES NÚMEROS SON PROVISORIOS. Decisión del founder del 2026-07-31, tomada SIN la medición
+// que debería fijarlos. Lo que los cambiaría es UNA cosa concreta y sólo una: **la medición del
+// tiempo real que tarda la pata fiat del proveedor cuando esté conectado de verdad**, extremo a
+// extremo, desde que se despacha la orden hasta que se puede confirmar el desembolso. Hoy ese
+// número no existe: no está medido, está supuesto.
+//
+// Y hay un resultado de esa medición que NO se resuelve tocando una constante: **si el peor tiempo
+// medido del proveedor supera MAX_CUSTODY_SECS (24 h), subir el techo es la respuesta equivocada.**
+// Eso sería un hallazgo de producto, no de configuración, y significa que el producto le está
+// pidiendo a una persona que le mandó plata a su familia que espere más de un día hábil sin poder
+// recuperarla ni saber si llegó. La decisión ahí es de producto (cambiar de proveedor, partir el
+// flujo, o declarar el plazo por adelantado), y hay que tomarla antes de tocar este archivo.
+
+/// Piso de la ventana de custodia: 1 hora.
+///
+/// Por qué existe: un deadline demasiado corto reabre exactamente la carrera que este programa
+/// viene a matar. Debajo de una hora el operador no llega a completar la pata fiat, así que el
+/// release le queda estructuralmente fuera de alcance y el sender termina refundeando remesas que
+/// sí se estaban pagando. PROVISORIO: ver la nota de arriba.
+pub const MIN_CUSTODY_SECS: i64 = 3_600;
+
+/// Techo de la ventana de custodia: 24 horas.
+///
+/// Por qué existe: es la exposición MÁXIMA del sender si el operador desaparece justo después del
+/// depósito. 24 h es el estándar de día hábil siguiente en remesas: cubre un release manual y un
+/// proveedor que liquida por lotes, y sigue siendo lo que una persona tolera. PROVISORIO: ver la
+/// nota de arriba, incluido el caso en que la medición lo supere.
+pub const MAX_CUSTODY_SECS: i64 = 86_400;
+
+/// Corrimiento único del deadline que habilita `begin_payout`: 1 hora, una sola vez.
+///
+/// Por qué es corta a propósito: es lo único que impide que "congelar" se convierta en "retener".
+/// El peor caso total de espera del sender es MAX_CUSTODY_SECS + PAYOUT_EXTENSION_SECS = 25 h, y
+/// cualquiera lo puede computar leyendo la cuenta. PROVISORIO: ver la nota de arriba.
+pub const PAYOUT_EXTENSION_SECS: i64 = 3_600;
+
 #[program]
 pub mod escrow {
     use super::*;
@@ -22,9 +67,19 @@ pub mod escrow {
 
         // 1. CHECKS
         require!(amount > 0, ErrorCode::ZeroAmount);
+        // La ventana de custodia se acota por los DOS lados. Los dos lados de cada comparación son
+        // independientes: el `deadline` viene en los args de la ix y el `now` sale del Clock del
+        // validador, que ningún cliente puede escribir. `saturating_add` porque el perfil release
+        // tiene `overflow-checks = true`: sin él, un `now` cerca de i64::MAX haría panic en vez de
+        // devolver el error, y un panic no es un rechazo legible.
+        let now = Clock::get()?.unix_timestamp;
         require!(
-            deadline > Clock::get()?.unix_timestamp,
-            ErrorCode::InvalidDeadline
+            deadline >= now.saturating_add(MIN_CUSTODY_SECS),
+            ErrorCode::DeadlineTooSoon
+        );
+        require!(
+            deadline <= now.saturating_add(MAX_CUSTODY_SECS),
+            ErrorCode::DeadlineTooFar
         );
 
         // 2. EFFECTS
@@ -236,6 +291,9 @@ pub enum EscrowStatus {
 pub enum ErrorCode {
     #[msg("Deposit amount must be greater than zero")]
     ZeroAmount,
+    /// Ya no la tira nadie: el piso de la ventana de custodia (`DeadlineTooSoon`) es estrictamente
+    /// más fuerte que "el deadline está en el futuro". Se conserva la VARIANTE, no su uso, porque
+    /// los códigos de Anchor son posicionales desde 6000 y borrarla renumeraría todo lo que sigue.
     #[msg("Deadline must be in the future")]
     InvalidDeadline,
     #[msg("Escrow is not in the Deposited state")]
@@ -249,6 +307,11 @@ pub enum ErrorCode {
     // cualquier cliente que mapee códigos. Debe quedar 6005.
     #[msg("Escrow index is full for this sender")]
     EscrowIndexFull,
+    // Apendizados al FINAL por el mismo motivo que EscrowIndexFull: 6006 y 6007 en ese orden.
+    #[msg("Deadline is below the minimum custody window")]
+    DeadlineTooSoon,
+    #[msg("Deadline is above the maximum custody window")]
+    DeadlineTooFar,
 }
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,11 @@ const DECIMALS = 6;
 const ONE_TOKEN = 1_000_000n;
 const DEPOSIT_AMOUNT = ONE_TOKEN;
 
+// Fixture deadline: 2 hours, inside the enforced custody window (floor 1 h, ceiling 24 h).
+// Deliberately NOT used by test 1b: that account is hand-built with the pre-upgrade bytes and must
+// stay exactly as it was written, since it is the evidence that live accounts still deserialize.
+const FIXTURE_TTL = 7_200n;
+
 // Layout constants asserted by this suite (HU-SOL-20 §5.1 / §4).
 const ESCROW_STATE_SIZE = 154; // 8 disc + 146 INIT_SPACE — the canary value (CD-7)
 const ESCROW_INDEX_SIZE = 558; // 8 disc + 550 INIT_SPACE (32 + 1 + 1 + (4 + 16*32))
@@ -435,7 +440,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
 
   it("2. deposit + register_escrow creates the index PDA with the right header and entries (AC-3)", async () => {
     const idA = rid(20);
-    const deadline = nowTs + 1000n;
+    const deadline = nowTs + FIXTURE_TTL;
     const a = await deposit(idA, DEPOSIT_AMOUNT, deadline);
     await register(idA, a.escrowState);
 
@@ -472,7 +477,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
   // ---- T3: end-to-end recovery with the remittanceId genuinely LOST (AC-4) --
 
   it("3. the sender recovers a forgotten escrow from the index alone and refunds it (AC-4)", async () => {
-    const deadline = nowTs + 1000n;
+    const deadline = nowTs + FIXTURE_TTL;
 
     // The id16 lives ONLY inside this block. After it closes the identifier is unreachable from
     // the rest of the test — that is the whole point (§6.1): nothing below may use it.
@@ -539,7 +544,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
 
   it("4b. an attacker cannot register the victim's escrow into any index (AC-5)", async () => {
     const id = rid(40);
-    const victim = await deposit(id, DEPOSIT_AMOUNT, nowTs + 1000n);
+    const victim = await deposit(id, DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
 
     // attacker signs as `sender` but passes the victim's escrow_state: the seeds are derived from
     // the SIGNER, so they cannot possibly match the victim's PDA.
@@ -551,7 +556,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
 
   it("4c. an attacker cannot deregister entries from the victim's index (AC-5)", async () => {
     const id = rid(41);
-    const v = await deposit(id, DEPOSIT_AMOUNT, nowTs + 1000n);
+    const v = await deposit(id, DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
     await register(id, v.escrowState);
 
     const victimIndex = indexPda(sender.publicKey);
@@ -568,7 +573,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
   // ---- T5: the cap is a clean dead-end, not a serialization crash (DT-5) ----
 
   it("5. registering MAX_ENTRIES escrows works and the next one reverts with EscrowIndexFull", async () => {
-    const deadline = nowTs + 1000n;
+    const deadline = nowTs + FIXTURE_TTL;
     const pda = indexPda(sender.publicKey);
 
     for (let i = 0; i < MAX_ENTRIES; i++) {
@@ -598,7 +603,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
 
   it("6. registering the same id twice does not duplicate and does not revert (idempotent)", async () => {
     const id = rid(50);
-    const r = await deposit(id, DEPOSIT_AMOUNT, nowTs + 1000n);
+    const r = await deposit(id, DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
     await register(id, r.escrowState);
 
     // CD-12: without a fresh blockhash bankrun would dedup this identical tx by signature and the
@@ -618,7 +623,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
   it("7. deregister_escrow removes only the target entry, moves no tokens, and is a no-op if absent", async () => {
     const idA = rid(70);
     const idB = rid(71);
-    const deadline = nowTs + 1000n;
+    const deadline = nowTs + FIXTURE_TTL;
     const a = await deposit(idA, DEPOSIT_AMOUNT, deadline);
     const b = await deposit(idB, DEPOSIT_AMOUNT, deadline);
     await register(idA, a.escrowState);
@@ -670,7 +675,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
 
   it("8b. register_escrow on an already Released escrow reverts (EscrowNotDeposited)", async () => {
     const id = rid(81);
-    const r = await deposit(id, DEPOSIT_AMOUNT, nowTs + 1000n);
+    const r = await deposit(id, DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
     await release(id, r.escrowState, r.vault);
 
     await expectRevert(register(id, r.escrowState), "EscrowNotDeposited");
@@ -707,7 +712,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
 
     // and the account actually allocated on chain is exactly that size
     const id = rid(90);
-    const r = await deposit(id, DEPOSIT_AMOUNT, nowTs + 1000n);
+    const r = await deposit(id, DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
     await register(id, r.escrowState);
     const raw = await context.banksClient.getAccount(indexPda(sender.publicKey));
     expect(raw!.data.length).to.equal(ESCROW_INDEX_SIZE);
@@ -724,7 +729,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
   // against a single observed sample.
   it("11. deposit + register_escrow in ONE atomic tx: report computeUnitsConsumed", async () => {
     const id = rid(91);
-    const deadline = nowTs + 1000n;
+    const deadline = nowTs + FIXTURE_TTL;
     const { escrowState, vault } = pdas(id);
 
     const depositIx = await program.methods
