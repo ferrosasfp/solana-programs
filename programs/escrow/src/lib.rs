@@ -1,3 +1,50 @@
+//! Non-custodial escrow for the in-flight moment of a remittance.
+//!
+//! # What it custodies
+//!
+//! One SPL token account (the `vault`) per remittance. Its authority is the
+//! `escrow_state` PDA, derived from `["escrow", sender, remittance_id]`, so no
+//! human and no operator holds a key that can move it. `EscrowState` records the
+//! `sender`, the `beneficiary`, the `authority` (operator), the `mint`, the
+//! `amount` and the `deadline`, all written once at `deposit` and never mutated
+//! afterwards except `status`.
+//!
+//! # Who can take the money out, and when
+//!
+//! The `deadline` chosen at deposit cuts time into two windows that never overlap:
+//!
+//! | Instruction | Who signs | When it is legal | Where the tokens go |
+//! |---|---|---|---|
+//! | `release` | `authority` (the operator) | `now <  deadline` | the `beneficiary` fixed at deposit |
+//! | `refund`  | `sender` | `now >= deadline` | back to the `sender` |
+//!
+//! Both also require `status == Deposited` and both write a terminal status
+//! *before* the transfer, so neither can run twice. Because the two windows are
+//! disjoint, at most one of them is legal at any instant: the operator cannot
+//! outrun a sender who is refunding, and the sender cannot claw back a payment
+//! the operator already made. That is the single invariant worth attacking.
+//!
+//! No instruction can send tokens to an address that was not written into
+//! `EscrowState` at deposit time, and no key can move the vault anywhere else.
+//!
+//! `deadline` is clamped at deposit to `[now + MIN_CUSTODY_SECS, now +
+//! MAX_CUSTODY_SECS]` (1 h to 24 h), so the sender's worst case wait before the
+//! refund path opens is bounded by the program and not by the operator.
+//!
+//! # What it deliberately does not do
+//!
+//! No fees, no partial release, no dispute resolution, and no admin instruction
+//! that can touch a live escrow. `close` runs only from a terminal state and only
+//! returns rent, plus any tokens a stranger sent to the vault, to the sender.
+//!
+//! # What still requires trust
+//!
+//! The program is deployed under the upgradeable loader and its upgrade authority
+//! is a single key: whoever holds it can replace all of the above. See
+//! `SECURITY.md` and the README for the current authority and for the two known
+//! custody limitations (a mint's freeze authority can freeze the vault, and the
+//! vault's associated token account can be front-created to block a deposit).
+
 use anchor_lang::prelude::*;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token::{Mint, Token, TokenAccount};
