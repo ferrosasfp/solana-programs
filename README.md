@@ -22,10 +22,11 @@ This is a project under implementation, not a finished product.
 | | |
 |---|---|
 | Deployed | Solana **devnet** only. No mainnet deployment exists. |
+| Source vs deployed | **They differ right now.** The custody window described below (release deadline, `begin_payout`, `abort_payout`, the dust sweep) is in this source and **has not been deployed**. The deployed devnet binary is still the previous one, and the hashes in [Deployment](#deployment) describe that older binary, not a build of this tree. |
 | Money at risk | None. Devnet, with a test mint we control. |
 | Upgrade authority | **Present.** The program is deployed under the upgradeable loader and its authority is a single devnet key. See [Upgrade authority](#upgrade-authority). |
 | External audit | **None.** The program has not been reviewed by a third party security firm. |
-| Test coverage | 23 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. |
+| Test coverage | 49 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. |
 | CI | The workflow exists and is currently **failing**, at the tool install step, before it reaches the program. See [Continuous integration](#continuous-integration). |
 | Reproducible build | The mechanism is in place and **has never run on a clean machine**. The hashes below are published so you can try it yourself and tell us if it does not. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
 | Known issues | Written down below, none of them about custody. See [Known limitations](#known-limitations). |
@@ -104,6 +105,11 @@ bytes were produced by the source in this repository, and that you can produce t
 
 ### What you can check right now
 
+> **These hashes describe the binary deployed on devnet, which predates the custody window.** A
+> build of this tree will not match them, on purpose: the source is ahead of the chain and the
+> upgrade has not been performed. To reproduce the deployed bytes, check out the commit before the
+> custody window landed.
+
 ```bash
 git clone https://github.com/ferrosasfp/solana-programs
 cd solana-programs
@@ -152,25 +158,44 @@ workflows, and the Toolchain table below.
 
 ## Flow
 
+The deadline splits time into two windows that do not overlap:
+
 ```
-deposit ──> Deposited ──┬── release ──> Released  ──┐
-                        │                           ├── close ──> accounts gone, rent returned
-                        └── refund  ──> Refunded ───┘
-                            (only after deadline)
+   deposit                      deadline                     deadline + extension
+      |------------------------------|----------------------------------|
+      |        release ONLY          |           refund ONLY            |
+      |        (now <  deadline)     |           (now >= deadline)      |
+```
+
+```
+deposit ──> Deposited ──┬── begin_payout ──> PayoutPending ──┬── release ──> Released ──┐
+                        │        (once, +1 h)     │          │                          ├── close
+                        │                         └─ abort_payout ─> Deposited          │
+                        ├── release ──> Released  ─────────────────────────────────────>┤
+                        └── refund  ──> Refunded  ─────────────────────────────────────>┘
+                            (only from the deadline on)
 ```
 
 1. **`deposit(remittance_id, beneficiary, authority, amount, deadline)`**
    The sender locks `amount` into a vault. The beneficiary, the releasing authority, the mint,
-   the amount and the deadline are written to the state account and never change afterwards.
+   the amount and the deadline are written to the state account. The deadline has to fall inside
+   the custody window, between one hour and twenty four hours from now.
 
-2. Exactly one terminal exit, and they are mutually exclusive:
-   - **`release(remittance_id)`** the recorded authority pays the recorded beneficiary. The
-     destination is validated by constraint, it is not a caller supplied account.
-   - **`refund(remittance_id)`** after the deadline the sender alone recovers the funds. The
+2. Exactly one terminal exit, and they are mutually exclusive **at every instant**, because they
+   read the same clock and the same field with complementary comparisons:
+   - **`release(remittance_id)`** the recorded authority pays the recorded beneficiary, and only
+     before the deadline. The destination is validated by constraint, it is not a caller supplied
+     account.
+   - **`refund(remittance_id)`** from the deadline on, the sender alone recovers the funds. The
      authority is not part of this instruction at all.
 
-3. **`close(remittance_id)`** once terminal, rent for the state account and the vault goes back
-   to the sender.
+3. **`begin_payout(remittance_id, fiat_ref)`** the authority moves the deadline forward by one
+   hour, once, and only if it arrives before the deadline. It moves no tokens and it cannot revoke
+   a refund that already vested. **`abort_payout(remittance_id)`** undoes it by parking the
+   deadline at `now`, which enables the sender's refund immediately.
+
+4. **`close(remittance_id)`** once terminal, rent for the state account and the vault goes back
+   to the sender, and any residual token balance in the vault is swept to the sender first.
 
 ### Recovering an escrow whose id was lost
 
@@ -179,13 +204,13 @@ stored on chain. Losing them used to make the funds unreachable even for the sen
 right to refund but no way to name the account. Two instructions add a per sender index so the id
 can be read back from the chain:
 
-4. **`register_escrow(remittance_id)`** records the id in an `EscrowIndex` account derived from
+5. **`register_escrow(remittance_id)`** records the id in an `EscrowIndex` account derived from
    `["escrow-index", sender]`, that is, derivable knowing only the sender's own address. It
    requires the escrow to exist, to belong to the signing sender, and to still be open, so the
    index only ever lists live escrows. It moves zero tokens. Re-registering the same id neither
    duplicates nor reverts.
 
-5. **`deregister_escrow(remittance_id)`** removes one id from the caller's own index. It is a
+6. **`deregister_escrow(remittance_id)`** removes one id from the caller's own index. It is a
    no op if the id is absent, it moves no tokens, and it deliberately does not require a terminal
    state: requiring one would make entries of already closed escrows impossible to clean up.
 
@@ -197,26 +222,52 @@ party to either instruction and gains no power over the funds.
 
 | Instruction | Signer | Effect | Guards |
 |-------------|--------|--------|--------|
-| `deposit` | sender | creates state + vault, pulls `amount` in | `amount > 0`, `deadline` in the future |
-| `release` | recorded authority | pays the recorded beneficiary | `has_one` on authority, beneficiary, sender, mint; status must be `Deposited` |
-| `refund` | sender | pays the sender back | `has_one` on sender and mint; status `Deposited`; `now >= deadline` |
-| `close` | sender | closes state + vault, rent to sender | status must not be `Deposited` |
+| `deposit` | sender | creates state + vault, pulls `amount` in | `amount > 0`; `now + 1 h <= deadline <= now + 24 h` |
+| `release` | recorded authority | pays the recorded beneficiary | `has_one` on authority, beneficiary, sender, mint; status open (`Deposited` or `PayoutPending`); **`now < deadline`** |
+| `refund` | sender | pays the sender back | `has_one` on sender and mint; status open; `now >= deadline` |
+| `begin_payout` | recorded authority | moves the deadline forward by 1 h, once | `has_one` on authority and sender; status `Deposited`; `now < deadline`. Moves no tokens |
+| `abort_payout` | recorded authority | parks the deadline at `now` | `has_one` on authority and sender; status `PayoutPending`. Moves no tokens |
+| `close` | sender | sweeps the vault to the sender, closes state + vault, rent to sender | status in `{Released, Refunded}` |
 | `register_escrow` | sender | adds an id to the sender's index | escrow belongs to signer and is `Deposited`; index not full |
 | `deregister_escrow` | sender | removes an id from the sender's index | index PDA is seeded by the signer |
+
+States: `Deposited` (0), `Released` (1, terminal), `Refunded` (2, terminal), `PayoutPending` (3,
+**not** terminal: the funds are there and the sender can still recover them). The new variant is
+appended at the end because 0, 1 and 2 are already written in live accounts, and it is a unit
+variant, so `EscrowState` stays at 154 bytes.
 
 Errors:
 
 | Code | Name | When |
 |------|------|------|
 | 6000 | `ZeroAmount` | deposit of 0 |
-| 6001 | `InvalidDeadline` | deadline not in the future |
+| 6001 | `InvalidDeadline` | unused since the custody window landed; `DeadlineTooSoon` is strictly stronger. The variant stays so the numbering does not move |
 | 6002 | `EscrowNotDeposited` | escrow is not open |
 | 6003 | `DeadlineNotReached` | refund attempted too early |
-| 6004 | `EscrowNotTerminal` | close attempted while open |
+| 6004 | `EscrowNotTerminal` | close attempted from a non terminal state |
 | 6005 | `EscrowIndexFull` | 33rd open escrow for one sender |
+| 6006 | `DeadlineTooSoon` | deadline below the one hour floor |
+| 6007 | `DeadlineTooFar` | deadline above the twenty four hour ceiling |
+| 6008 | `ReleaseWindowClosed` | release or `begin_payout` attempted at or after the deadline |
+| 6009 | `EscrowNotPayoutPending` | `abort_payout` on an escrow that was never frozen |
 
 The numbering is positional in Anchor. Inserting a variant in the middle would renumber the
-others and break any client mapping codes, which is why `EscrowIndexFull` was appended at the end.
+others and break any client mapping codes, which is why every new code is appended at the end.
+
+### The three numbers
+
+| Constant | Value | What it bounds |
+|----------|-------|----------------|
+| `MIN_CUSTODY_SECS` | 1 hour | Floor of the deadline a deposit may set |
+| `MAX_CUSTODY_SECS` | 24 hours | Ceiling, so the sender's worst case exposure is bounded |
+| `PAYOUT_EXTENSION_SECS` | 1 hour, once | How far `begin_payout` can move the deadline |
+
+Worst case wait for a sender, computable by anyone reading the account: 25 hours.
+
+**These three are provisional**, and the source says so where they are defined. The one thing that
+would change them is a measurement of how long the fiat leg actually takes end to end, which does
+not exist yet. And if that measurement ever exceeds 24 hours, raising the ceiling is the wrong
+answer: that is a product finding, not a constant.
 
 ## On-chain state
 
@@ -275,9 +326,39 @@ account. Covered by `escrow.ts` test 1.
 
 **4. Refund does not depend on the authority existing, cooperating, or being online.**
 The `Refund` context has no `authority` account at all
-([`lib.rs:337-370`](programs/escrow/src/lib.rs#L337-L370)). The sender signs alone, after the
-deadline ([`lib.rs:94-97`](programs/escrow/src/lib.rs#L94-L97)). Covered by `escrow.ts` test 4, where
+([`lib.rs:597`](programs/escrow/src/lib.rs#L597)). The sender signs alone, from the
+deadline on ([`lib.rs:165`](programs/escrow/src/lib.rs#L165)). Covered by `escrow.ts` test 4, where
 the authority keypair never signs, and `escrow.ts` test 3 for the too-early case.
+
+**4b. Release and refund can never both be legal, at any instant.**
+`release` requires `now < deadline` ([`lib.rs:122`](programs/escrow/src/lib.rs#L122)) and `refund`
+requires `now >= deadline` ([`lib.rs:165`](programs/escrow/src/lib.rs#L165)). Same clock, same
+field, complementary over the integers. This is the property to attack: to refute it you have to
+exhibit an instant and a state where both get in. `escrow-window.ts` tests B1, B2 and B3 try, at
+`deadline - 1`, at `deadline` exactly, and swept across the whole edge asserting that exactly one
+of the two succeeds at every offset.
+
+Before this guard existed, `release` was legal forever: an escrow whose deadline expired six days
+ago could still be released today, so a sender recovering funds was not exercising a right, it was
+entering a race decided by who sent the transaction first.
+
+**4c. The freeze can postpone a refund, once, and can never revoke one.**
+`begin_payout` requires `now < deadline` ([`lib.rs:232`](programs/escrow/src/lib.rs#L232)) and
+status `Deposited`, so it cannot touch a refund that already vested and cannot be renewed: the
+status is its own used flag. `abort_payout` can only move the deadline backwards, to `now`. Neither
+context contains a single token account ([`lib.rs:635`](programs/escrow/src/lib.rs#L635),
+[`654`](programs/escrow/src/lib.rs#L654)), so no transfer CPI is reachable from either.
+
+It also adds no privilege: `begin_payout` is signed by the same authority already recorded in the
+account, the one that can already call `release`, and `release` sends the whole principal out of
+the sender's reach permanently. And if you delete `begin_payout` entirely, no attack opens up: the
+refund guarantee never depended on it. Covered by `escrow-window.ts` tests C2 to C9.
+
+**4d. `fiat_ref` is attribution, not proof.**
+`begin_payout` takes an opaque `[u8; 32]` that the program never interprets, emits in an event and
+never reads. It does not prove the fiat leg happened, and `PayoutPending` does not mean "the
+provider paid". No on-chain program can verify a bank. What it records is who said it would happen,
+when, and against which reference.
 
 **5. One terminal transition, and the state changes before the transfer.**
 Status is set to `Released` or `Refunded` before the CPI, not after
@@ -299,8 +380,11 @@ what the beneficiary receives by sending tokens to the vault.
 only through a fresh deposit that reinitializes every field. Covered by `escrow.ts` tests 6 and 8.
 
 **8. Close is only reachable from a terminal state.**
-`constraint = status != Deposited` ([`lib.rs:386`](programs/escrow/src/lib.rs#L386)). You cannot
-reclaim rent out from under a live escrow. Covered by `escrow.ts` test 7.
+`constraint = status.is_terminal()` ([`lib.rs:688`](programs/escrow/src/lib.rs#L688)), a whitelist
+of `{Released, Refunded}` rather than a negation. With a second non terminal state in the enum, the
+old `!= Deposited` would have let a frozen escrow be closed with a full vault. You cannot reclaim
+rent out from under a live escrow. Covered by `escrow.ts` test 7 and `escrow-window.ts` D2, which
+forces the vault to zero first so that the guard being tested is ours and not SPL's.
 
 **9. The index is writable only by its owner.**
 In both instructions the index PDA is seeded by the signing sender
@@ -312,10 +396,11 @@ signature. `register_escrow` additionally carries `has_one = sender` on the escr
 and to deregister from it.
 
 **10. The index gives the authority no power and moves no tokens.**
-Neither new instruction takes an `authority` account and neither performs an SPL transfer. `escrow-index.ts`
-test 4a asserts this against the built IDL rather than against the source: exactly 6 instructions,
-and neither of the two new ones has an `authority` account. `escrow-index.ts` test 7 asserts no
-token balance changes.
+Neither recovery instruction takes an `authority` account and neither performs an SPL transfer.
+`escrow-index.ts` test 4a asserts this against the built IDL rather than against the source:
+exactly 8 instructions, and neither `register_escrow` nor `deregister_escrow` has an `authority`
+account. `escrow-index.ts` test 7 asserts no token balance changes. The count is pinned so that an
+instruction nobody reviewed shows up as a red diff.
 
 **11. The index is bounded and idempotent.**
 32 entries maximum ([`lib.rs:193`](programs/escrow/src/lib.rs#L193)); the 33rd reverts with
@@ -334,16 +419,32 @@ concern.
 
 We would rather you read these here than find them yourself.
 
-**Rent can be griefed by sending dust to the vault.**
+**Rent could be griefed by sending dust to the vault. Fixed in this source, not yet deployed.**
 `release` and `refund` move the recorded amount, so the beneficiary and the sender always get
 what they are owed. But the vault is an associated token account at a derivable address, so
-anyone can transfer tokens into it. If they do, the leftover balance makes `close` fail with the
-SPL error `NonNativeHasBalance`, because it calls `CloseAccount` on a non empty account. The
-consequence is that the state account and the vault stay alive and their rent, about 0.004 SOL,
-is never returned to the sender. That `[sender, remittance_id]` pair also stays occupied forever.
-Custody is not affected. We reproduced this in a local bank before writing it down. The natural
-fix is for `close` to sweep any residual balance to the sender before closing the vault, and it
-is not applied yet because changing the deployed program is a deliberate step, see below.
+anyone can transfer tokens into it. If they did, the leftover balance made `close` fail with the
+SPL error `NonNativeHasBalance`, because it calls `CloseAccount` on a non empty account, and the
+rent of two accounts stayed dead. `close` now sweeps any residual balance to the sender before
+closing the vault ([`lib.rs:312`](programs/escrow/src/lib.rs#L312)), covered by `escrow-window.ts`
+D1 and D1b. **The devnet program still has the old behaviour until this source is deployed.**
+
+That sweep added a `sender_ata` account to `close`. Any client building the instruction with the
+old account list has to add it.
+
+**The custody window is enforced on chain, and only on chain.**
+The floor and the ceiling stop a one second deadline and an `i64::MAX` deadline from being
+recorded, but a deposit that never goes through our infrastructure can still be built by anyone
+willing to pay its own fee, with any mint. The mint is deliberately not pinned in the program, see
+[The mint](#the-mint).
+
+**The clock is the validator's clock.**
+Every deadline is measured against `Clock::unix_timestamp`, which can drift from wall time. The
+nominal window and the effective one are not exactly the same. We have not measured that drift and
+the margins were not chosen against it.
+
+**The window bounds time, not amount.**
+It caps how long a sender is exposed. It says nothing about how much. A cap on the amount that can
+be committed automatically is a separate control and it does not exist yet.
 
 **`EscrowIndex` rent is not recoverable.**
 There is no instruction that closes the index account. Once a sender creates one, its rent stays
@@ -378,6 +479,16 @@ The mint is not hardcoded. It enters every instruction as an account and is reco
 `EscrowState.mint`, then enforced by `has_one = mint` on every later instruction, so an escrow
 can only ever be settled in the mint it was opened with.
 
+That is a decision, not an omission, and it has a condition that would reverse it. The program is
+generic escrow infrastructure, while "which token counts as a dollar" is product policy: pinning it
+in the binary would mean two builds for devnet and mainnet, two IDLs, two pinned hashes, and a
+redeploy to rotate it. So the allow list belongs in the component that sits on the critical path of
+every deposit, which today is the off-chain co-signer that refuses to sign a deposit carrying an
+unexpected mint. **What would change this:** the day anything sweeps the chain for deposits and
+takes them as good without that co-signature, the mint has to be pinned on chain, because at that
+point a self funded deposit with an attacker's mint would enter a product path. The enumerators
+that exist today only feed the refund, which is harmless.
+
 Two devnet mints show up around this program and they are easy to confuse:
 
 | Mint | What it is |
@@ -404,12 +515,18 @@ Tests run on [`anchor-bankrun`](https://github.com/kevinheavey/anchor-bankrun), 
 no local validator, which is what makes deterministic control of the clock possible for the
 deadline cases.
 
-Last measured run: **23 passing**, in about 2 seconds.
+Last measured run: **49 passing**, in about 4 seconds.
 
 | Suite | Tests | What it covers |
 |-------|-------|----------------|
 | `tests/escrow.ts` | 10 | deposit, release, refund, close, the state machine, the 154 byte canary |
 | `tests/escrow-index.ts` | 13 | the index, attacker paths, legacy account compatibility, IDL shape, the entry cap, rent and compute cost |
+| `tests/escrow-window.ts` | 26 | the custody window floor and ceiling, both edges of the release/refund invariant, the freeze and its abort, the dust sweep |
+
+`escrow-window.ts` re-declares the three constants as its own literals instead of importing them
+from the program. That is deliberate: a test that asked the program for its own number, or that
+re-derived `deadline + extension` the same way the program does, would keep passing after someone
+multiplied the extension by ten. It would be a guard comparing itself against itself.
 
 The suites import the built IDL directly rather than guarding it behind a file existence check.
 That is on purpose: if the build artifact is missing, the suite must fail loudly instead of

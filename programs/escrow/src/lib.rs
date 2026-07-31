@@ -519,6 +519,17 @@ pub struct Deposit<'info> {
     #[account(mut)]
     pub sender: Signer<'info>,
 
+    /// Acepta CUALQUIER mint, y es una decisión, no un olvido. El programa es infraestructura de
+    /// escrow genérica; "qué token vale un dólar" es política de producto y vive en el componente
+    /// que está en el camino crítico de todos los depósitos (el co-firmante off-chain, que se
+    /// niega a firmar un depósito con un mint inesperado). Clavarlo acá obligaría a dos builds,
+    /// dos IDL, dos hashes pinneados y un redespliegue para rotarlo.
+    ///
+    /// LA CONDICIÓN QUE DA VUELTA ESTA DECISIÓN, escrita para que se pueda comprobar: el día que
+    /// exista un barrido que descubra depósitos on-chain y los tome por buenos SIN esa co-firma,
+    /// el mint tiene que clavarse acá, porque ahí un depósito auto-fondeado con el mint de un
+    /// atacante entraría a un camino de producto. Los enumeradores de hoy (EscrowIndex y el
+    /// resolver de ids) sólo alimentan el refund, que es inofensivo.
     pub mint: Account<'info, Mint>,
 
     #[account(
