@@ -286,7 +286,18 @@ pub mod escrow {
         Ok(())
     }
 
-    /// `constraint status != Deposited` (AC-8) va en el Context. Aquí solo cerramos el vault.
+    /// La lista blanca de estados terminales (AC-8) va en el Context. Acá barremos el vault y lo
+    /// cerramos.
+    ///
+    /// EL BARRIDO. `CloseAccount` de SPL exige saldo CERO. Como el vault es una ATA con dirección
+    /// derivable, cualquiera puede mandarle 1 unidad atómica después del release y trabar el cierre
+    /// para siempre, dejando muerto el rent de dos cuentas. El barrido manda el remanente al
+    /// `sender_ata` antes de cerrar, así que el polvo deja de ser un candado.
+    ///
+    /// Por qué el remanente va al SENDER y no al beneficiary: llegado este punto el escrow ya está
+    /// en un estado terminal, o sea que el monto custodiado ya se pagó completo a quien
+    /// correspondía. Lo que quede acá es polvo que un tercero donó, no parte del principal, y el
+    /// sender es quien pagó el rent de las dos cuentas que se están cerrando.
     pub fn close(ctx: Context<Close>, remittance_id: [u8; 16]) -> Result<()> {
         let sender_key = ctx.accounts.sender.key();
         let bump = ctx.accounts.escrow_state.bump;
@@ -296,6 +307,22 @@ pub mod escrow {
             remittance_id.as_ref(),
             &[bump],
         ]];
+
+        let remaining = ctx.accounts.vault.amount;
+        if remaining > 0 {
+            let sweep_accounts = anchor_spl::token::Transfer {
+                from: ctx.accounts.vault.to_account_info(),
+                to: ctx.accounts.sender_ata.to_account_info(),
+                authority: ctx.accounts.escrow_state.to_account_info(),
+            };
+            let sweep_ctx = CpiContext::new_with_signer(
+                ctx.accounts.token_program.key(),
+                sweep_accounts,
+                signer_seeds,
+            );
+            anchor_spl::token::transfer(sweep_ctx, remaining)?;
+        }
+
         let cpi_accounts = anchor_spl::token::CloseAccount {
             account: ctx.accounts.vault.to_account_info(),
             destination: ctx.accounts.sender.to_account_info(),
@@ -654,7 +681,11 @@ pub struct Close<'info> {
         bump = escrow_state.bump,
         has_one = sender,
         has_one = mint,
-        constraint = escrow_state.status != EscrowStatus::Deposited @ ErrorCode::EscrowNotTerminal,
+        // LISTA BLANCA, no `!= Deposited`. Con la variante PayoutPending, la negación dejaría
+        // cerrar un escrow congelado con el vault LLENO: el guard viejo diría que sí y el único que
+        // frenaría sería SPL, y sólo mientras el vault no esté vacío. Enumerar los estados en los
+        // que cerrar es correcto es lo que hace que agregar un estado nuevo no abra un agujero.
+        constraint = escrow_state.status.is_terminal() @ ErrorCode::EscrowNotTerminal,
         close = sender
     )]
     pub escrow_state: Account<'info, EscrowState>,
@@ -665,6 +696,15 @@ pub struct Close<'info> {
         associated_token::authority = escrow_state
     )]
     pub vault: Account<'info, TokenAccount>,
+
+    /// Destino del barrido del polvo. Cuenta NUEVA en esta instrucción: los consumidores que hoy
+    /// arman el `close` con la lista vieja tienen que agregarla.
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = sender
+    )]
+    pub sender_ata: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
 }

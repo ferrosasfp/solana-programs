@@ -509,6 +509,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
           mint,
           escrowState,
           vault,
+          senderAta, // sweep destination, new account in this instruction
           tokenProgram: TOKEN_PROGRAM_ID,
         })
         .signers([sender])
@@ -545,6 +546,7 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
         mint,
         escrowState: first.escrowState,
         vault: first.vault,
+        senderAta, // sweep destination, new account in this instruction
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .signers([sender])

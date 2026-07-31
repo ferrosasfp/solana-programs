@@ -283,6 +283,25 @@ describe("escrow-window — the custody window and the payout freeze", () => {
       .rpc();
   }
 
+  function close(
+    remittanceId: Uint8Array,
+    escrowState: PublicKey,
+    vault: PublicKey
+  ) {
+    return program.methods
+      .close(Array.from(remittanceId))
+      .accountsPartial({
+        sender: sender.publicKey,
+        mint,
+        escrowState,
+        vault,
+        senderAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([sender])
+      .rpc();
+  }
+
   function fiatRef(seed: number): number[] {
     const b = new Array(32).fill(0);
     b[0] = seed;
@@ -788,5 +807,93 @@ describe("escrow-window — the custody window and the payout freeze", () => {
     );
     await refund(rid(64), b.escrowState, b.vault);
     expect(await statusOf(b.escrowState)).to.equal("refunded");
+  });
+
+  // =========================================================================
+  // D. close: whitelist of terminal states, and the vault dust
+  // =========================================================================
+
+  it("D1. dust donated to the vault after the release no longer bricks the close: it is swept to the sender", async () => {
+    const DUST = 1n; // one atomic unit, the cheapest possible denial of service
+    const { escrowState, vault } = await deposit(rid(70), DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
+    await release(rid(70), escrowState, vault);
+    expect(await tokenBalance(vault)).to.equal(0n);
+
+    // anybody can do this: the vault is an ATA with a derivable address
+    await processIxs(
+      [
+        createTransferInstruction(
+          senderAta,
+          vault,
+          sender.publicKey,
+          DUST,
+          [],
+          TOKEN_PROGRAM_ID
+        ),
+      ],
+      [sender]
+    );
+    expect(await tokenBalance(vault)).to.equal(DUST);
+
+    const before = await tokenBalance(senderAta);
+    await close(rid(70), escrowState, vault);
+
+    // the dust came back, and both accounts are gone (their rent is not dead)
+    expect(await tokenBalance(senderAta)).to.equal(before + DUST);
+    expect(await tokenBalance(vault)).to.equal(-1n);
+    expect(await context.banksClient.getAccount(escrowState)).to.equal(null);
+  });
+
+  it("D1b. the same holds after a refund: dust does not turn the close into a dead end", async () => {
+    const DUST = 3n;
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState, vault } = await deposit(rid(71), DEPOSIT_AMOUNT, deadline);
+    await warpTo(deadline);
+    await refund(rid(71), escrowState, vault);
+
+    await processIxs(
+      [
+        createTransferInstruction(
+          senderAta,
+          vault,
+          sender.publicKey,
+          DUST,
+          [],
+          TOKEN_PROGRAM_ID
+        ),
+      ],
+      [sender]
+    );
+
+    const before = await tokenBalance(senderAta);
+    await close(rid(71), escrowState, vault);
+    expect(await tokenBalance(senderAta)).to.equal(before + DUST);
+    expect(await context.banksClient.getAccount(escrowState)).to.equal(null);
+  });
+
+  it("D2. a FROZEN escrow cannot be closed, and the guard that says so is ours (EscrowNotTerminal)", async () => {
+    // MASKED GUARD WARNING. With the vault full, the one rejecting this close would be SPL
+    // (CloseAccount demands a zero balance) and our own whitelist would never be evaluated: the
+    // test would pass while the guard was gone. So the vault is forced to zero first, which is the
+    // only arrangement where a `!= Deposited` written instead of the whitelist shows up.
+    const { escrowState, vault } = await deposit(rid(72), DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
+    await beginPayout(rid(72), escrowState, fiatRef(1));
+
+    const raw = await context.banksClient.getAccount(vault);
+    assert.isNotNull(raw, "the vault must exist");
+    const data = Buffer.from(raw!.data);
+    data.writeBigUInt64LE(0n, 64); // SPL token account layout: mint(32) + owner(32) + amount(8)
+    context.setAccount(vault, {
+      lamports: raw!.lamports,
+      data: new Uint8Array(data),
+      owner: raw!.owner,
+      executable: raw!.executable,
+      rentEpoch: raw!.rentEpoch,
+    });
+    expect(await tokenBalance(vault)).to.equal(0n);
+
+    await expectRevert(close(rid(72), escrowState, vault), "EscrowNotTerminal");
+    // still there, still frozen, still refundable when its extended deadline lands
+    expect(await statusOf(escrowState)).to.equal("payoutPending");
   });
 });
