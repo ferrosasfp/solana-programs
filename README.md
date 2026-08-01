@@ -28,7 +28,7 @@ This is a project under implementation, not a finished product.
 | External audit | **None.** The program has not been reviewed by a third party security firm. |
 | Test coverage | 43 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. On top of those, the custody window was exercised against the deployed program with seven real transactions, including the one that needs a genuinely expired deadline: see [The custody window, exercised against the deployed program](#the-custody-window-exercised-against-the-deployed-program). |
 | CI | **Green.** clippy, `anchor build` and the 43 tests run on every push. See [Continuous integration](#continuous-integration). |
-| Reproducible build | **Confirmed once, for a binary that is no longer on chain.** A GitHub runner rebuilt the program in the pinned container and reproduced the devnet bytes exactly, before the custody window was deployed. That run has not been repeated against the binary live today. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
+| Reproducible build | **Confirmed for the binary running today.** A GitHub runner rebuilt this tree in the pinned container after the 2026-08-01 deploy and its hash matched the program on devnet. Nobody outside this project has repeated it. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
 | On-chain IDL | **Published** on 2026-08-01, in the canonical metadata account `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`. `anchor idl fetch` returns it and its canonical sha256 matches this repository and both consumers. The explorer may still not render Anchor IDLs; fetching works regardless. See [Publishing the IDL on chain](doc/publish-idl-onchain.md), including why the documented command fails and what worked instead. |
 | Known issues | Written down below, **and two of them are about custody**: a mint with a freeze authority can freeze the vault, and the vault's associated token account can be pre-created by a stranger to block a deposit. See [Known limitations](#known-limitations). |
 
@@ -184,12 +184,11 @@ not exist.
 |---|---|
 | The deployed bytes equal our local `target/deploy/escrow.so` | **Confirmed** for the 2026-08-01 binary, on the machine that built and deployed it: devnet reports `verify-hash` `9d9c0679...` and the local artifact with trailing zeros trimmed hashes to the same value. |
 | The binary carries no path from that machine | **Confirmed.** The only absolute path embedded is inside the precompiled platform-tools, identical for everyone using the same Agave version. |
-| A container rebuild reproduces those bytes | **Confirmed for the previous binary, not yet for this one.** A GitHub runner reproduced the pre custody window build at commit [`36444ef`](https://github.com/ferrosasfp/solana-programs/commit/36444ef0684bfd3da2b91eb9482ea88d8169da22) ([run 30664488714](https://github.com/ferrosasfp/solana-programs/actions/runs/30664488714)), matching all three hashes. That run describes a binary that is no longer on chain. The same workflow has not been run against the 2026-08-01 deploy, so for the binary live today this row is **open**. |
+| A container rebuild reproduces those bytes | **Confirmed for the binary live today.** A GitHub runner rebuilt this tree in the pinned container after the 2026-08-01 deploy ([run 30713836991](https://github.com/ferrosasfp/solana-programs/actions/runs/30713836991)) and printed `built verify hash 9d9c0679...` against `on-chain verify hash 9d9c0679...`. It also produced `e6d80431...` for the raw `.so`, byte for byte the same file a local `anchor build` produces on the machine that deployed it, so the container and the developer machine agree as well. |
 | An independent third party reproduced it | **Not confirmed.** Nobody outside this project has tried yet. A GitHub runner is not our laptop, but it is still our workflow. |
 
-So: the mechanism is wired up and public, and it came back green once, on hardware we do not own,
-for a binary that has since been replaced. Two things are still missing: re-running it against the
-binary that is live now, and somebody with no stake in this repository running it and saying so. If
+So: the mechanism is wired up, public, and green against the binary that is actually on chain right
+now. What is still missing is somebody with no stake in this repository running it and saying so. If
 it does not reproduce on your machine, that is a finding we want to hear about.
 
 ### Why the build image had to be declared
@@ -728,13 +727,22 @@ The assertion block was exercised against injected hashes in all eight combinati
 that must pass, and the six that must fail (deployed without flipping the flag, chain moved
 unannounced, empty tool output, non-hex garbage, rebuild differing from the chain, rebuild
 differing from this file). All eight behaved as expected. That exercise predates the change to the
-middle row and has not been repeated against it.
+middle row, so the injected-failure sweep has not been repeated against its new form. What has run
+against the new form is the real thing, and it passed.
 
-The honest gap: **the byte-for-byte claim has not yet come back green for the binary deployed
-today.** It passed at [`36444ef`](https://github.com/ferrosasfp/solana-programs/commit/36444ef0684bfd3da2b91eb9482ea88d8169da22),
-against the previous binary. The first run of this workflow after the deploy is the one that will
-say whether the container still reproduces what is on chain, and it had not completed when this
-was written. If it comes back red, this file is what needs correcting, not the flag.
+**The byte-for-byte claim is green for the binary deployed today.**
+[Run 30713836991](https://github.com/ferrosasfp/solana-programs/actions/runs/30713836991), the
+first one after the deploy, printed:
+
+```
+built verify hash      9d9c0679c3496d09e0d2e067b0e7a63002bf435ddff6256837b9114949f464f1
+on-chain verify hash   9d9c0679c3496d09e0d2e067b0e7a63002bf435ddff6256837b9114949f464f1
+ok   deployed program == the verify hash published in README.md
+ok   rebuilt artifact == the verify hash published in README.md
+ok   rebuilt artifact == the program deployed on devnet
+```
+
+Three checks, all with `SOURCE_REPRODUCES_CHAIN=true`, so none of them was skipped by the flag.
 
 ### `ci.yml`
 
