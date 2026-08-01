@@ -31,23 +31,28 @@ env:
   # A control that only compares two values it computed itself would pass through
   # a silent redeploy; this one does not.
   #
-  # sha256 over the deployed bytes exactly as they are (== sha256sum of the .so).
-  EXPECTED_ARTIFACT_SHA256: "dc0ba21a5a620ef5dd1546c2c9e86eb6d00f9ca438e97bb4e2a5fa09819a8960"
+  # sha256 over the ProgramData payload exactly as the account holds it, padding
+  # included. Until 2026-08-01 the account was sized to fit the binary, so this
+  # also equalled sha256sum of the .so. The extend added 150000 bytes of reserved
+  # space that the loader zero-fills, so it no longer does and NO local build can
+  # reproduce it. It is still pinned here because it describes the account and a
+  # redeploy moves it, but it is compared only against the chain, never against a
+  # rebuild. See README.md, Reproducing the deployed binary.
+  EXPECTED_ARTIFACT_SHA256: "c067878e8a2a0cae2ca61f8c13c4d0eabd9465025ac353de74ff859b2a465cfc"
   # sha256 over the same bytes with trailing zero padding removed, which is the
-  # convention solana-verify uses. The escrow binary ends in 15 zero bytes, so
-  # this value differs from the one above. Both describe the same artifact.
-  EXPECTED_VERIFY_HASH: "2c012e78a567584978e48fe1b20cd641d03389ae2e5944402d31eaa548e29779"
+  # convention solana-verify uses. This is the value a rebuild can reproduce, so
+  # it carries the byte-for-byte claim on its own now.
+  EXPECTED_VERIFY_HASH: "9d9c0679c3496d09e0d2e067b0e7a63002bf435ddff6256837b9114949f464f1"
   # Does the source in this repository still build the bytes that are deployed?
   #
-  # "false" since the custody window merged: that change is in this tree and has
-  # not been deployed, so a rebuild cannot match the chain and asserting that it
-  # does would keep the job red for a reason everybody already knows.
+  # "true" since 2026-08-01: the custody window was deployed in slot 480496830 and
+  # the source is no longer ahead of the chain.
   #
   # This is NOT a switch that silences the job. With "false" the job REQUIRES the
   # rebuild to differ from the chain, so a deploy that lands without flipping this
-  # back turns the run red instead of quietly passing. Flip it to "true" in the
-  # same commit that deploys, together with the two hashes above.
-  SOURCE_REPRODUCES_CHAIN: "false"
+  # back turns the run red instead of quietly passing. Flip it in the same commit
+  # that deploys, together with the two hashes above.
+  SOURCE_REPRODUCES_CHAIN: "true"
 
 jobs:
   # Cheap and dependency free: does the chain still hold what README.md claims?
@@ -166,8 +171,18 @@ jobs:
           if [ "$SOURCE_REPRODUCES_CHAIN" = "true" ]; then
             # The full claim: this source, rebuilt in the pinned container, is the
             # artifact published here and the program running on devnet.
-            assert_eq "rebuilt artifact == the sha256 published in README.md" \
-              "$built_artifact" "$EXPECTED_ARTIFACT_SHA256"
+            #
+            # Both comparisons use the verify hash, not the artifact sha256. Until
+            # the 2026-08-01 extend the artifact sha256 was reproducible from a
+            # build and this line compared against it; the extend added padding to
+            # the account, so that value is now unreachable from any local build
+            # and comparing against it would fail forever for a reason that has
+            # nothing to do with the source. The protection it gave is not lost:
+            # pinning the rebuild against README.md is what catches somebody
+            # editing README.md to match a chain that moved, and the line below
+            # does exactly that with the value that is still reproducible.
+            assert_eq "rebuilt artifact == the verify hash published in README.md" \
+              "$built_verify" "$EXPECTED_VERIFY_HASH"
             assert_eq "rebuilt artifact == the program deployed on devnet" \
               "$built_verify" "$onchain_verify"
           else
