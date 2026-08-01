@@ -26,7 +26,7 @@ This is a project under implementation, not a finished product.
 | Money at risk | None. Devnet, with a test mint we control. |
 | Upgrade authority | **Present.** The program is deployed under the upgradeable loader and its authority is a single devnet key. See [Upgrade authority](#upgrade-authority). |
 | External audit | **None.** The program has not been reviewed by a third party security firm. |
-| Test coverage | 43 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. |
+| Test coverage | 43 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. On top of those, the custody window was exercised against the deployed program with seven real transactions, including the one that needs a genuinely expired deadline: see [The custody window, exercised against the deployed program](#the-custody-window-exercised-against-the-deployed-program). |
 | CI | **Green.** clippy, `anchor build` and the 43 tests run on every push. See [Continuous integration](#continuous-integration). |
 | Reproducible build | **Confirmed once, for a binary that is no longer on chain.** A GitHub runner rebuilt the program in the pinned container and reproduced the devnet bytes exactly, before the custody window was deployed. That run has not been repeated against the binary live today. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
 | On-chain IDL | **Published** on 2026-08-01, in the canonical metadata account `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`. `anchor idl fetch` returns it and its canonical sha256 matches this repository and both consumers. The explorer may still not render Anchor IDLs; fetching works regardless. See [Publishing the IDL on chain](doc/publish-idl-onchain.md), including why the documented command fails and what worked instead. |
@@ -103,6 +103,37 @@ The full lifecycle has been exercised against the deployed program with a real S
 
 The two index instructions are deployed but have not been called on chain yet, so there are no
 `EscrowIndex` accounts on devnet. Their behaviour is covered by the test suite only.
+
+### The custody window, exercised against the deployed program
+
+The transactions above predate the custody window. After the 2026-08-01 deploy the window itself was
+attacked on chain rather than only in the suite, because a test suite runs against a clock it
+controls and this one does not. Seven checks, all with real transactions on devnet:
+
+| | What was attempted | Result |
+|---|---|---|
+| A | deposit with a 2 h window, which is what the client now sends | accepted |
+| B | deposit with a 10 minute deadline | rejected, `DeadlineTooSoon` (6006) |
+| C | deposit with a 48 hour deadline | rejected, `DeadlineTooFar` (6007) |
+| D | `refund` before the deadline | rejected, `DeadlineNotReached` (6003) |
+| E | `release` inside the window | accepted, 0.5 to the beneficiary, vault to 0 |
+| F | `release` **after** the deadline | rejected, `ReleaseWindowClosed` (6008) |
+| G | `refund` after the deadline | accepted, 0.5 back to the sender, vault to 0 |
+
+**F is the whole point of this version** and it is the one that cannot be rushed: the deadline has to
+be real, the floor is one hour, and the clock belongs to the validator. The escrow for F and G was
+`2eWYonV4PjznByNkLu7u8YLvbZcSh37d4QzreqeTVG14`, deposited with the minimum window and left to expire.
+Its refund landed in
+[`5BVVG5ST…HcYv`](https://explorer.solana.com/tx/5BVVG5STrNMeRwQQf8f1Mc8st3y5UvWUiEdd1xdjfu3Ciz3DzeK76PCFgkpi36mYj5MQJekW5gWX9pb5BGmsHcYv?cluster=devnet).
+
+B is worth reading twice: it is the exact value the client sent before the same day's fix, so it
+doubles as evidence that the incompatibility described further down was real and not hypothetical.
+
+E and G are there because A through D and F only prove the program **refuses** things. A program that
+refused everything would pass all five. E and G prove it also pays out, to the right party, in both
+directions of the window.
+
+Nothing was left stranded: `list-live-escrows.py --exit-nonzero-if-blocking` exits 0 afterwards.
 
 ## Reproducing the deployed binary
 
