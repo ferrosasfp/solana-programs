@@ -22,14 +22,14 @@ This is a project under implementation, not a finished product.
 | | |
 |---|---|
 | Deployed | Solana **devnet** only. No mainnet deployment exists. |
-| Source vs deployed | **They differ right now.** The custody window described below (the release deadline, the deposit floor and ceiling, the vault sweep on `close`) is in this source and **has not been deployed**. The deployed devnet binary is still the previous one, and the hashes in [Deployment](#deployment) describe that older binary, not a build of this tree. Deploying it changes the fate of escrows that are already live: see [Before upgrading the deployed program](#before-upgrading-the-deployed-program). |
+| Source vs deployed | **They agree.** The custody window (the release deadline, the deposit floor and ceiling, the vault sweep on `close`) was deployed to devnet on 2026-08-01, in slot `480496830`. The hashes in [Deployment](#deployment) describe a build of this tree. Before the deploy the one live escrow that would have lost its release exit was drained, and the ProgramData account was extended because the binary no longer fitted: both steps are written up in [Before upgrading the deployed program](#before-upgrading-the-deployed-program). |
 | Money at risk | None. Devnet, with a test mint we control. |
 | Upgrade authority | **Present.** The program is deployed under the upgradeable loader and its authority is a single devnet key. See [Upgrade authority](#upgrade-authority). |
 | External audit | **None.** The program has not been reviewed by a third party security firm. |
 | Test coverage | 43 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. |
 | CI | **Green.** clippy, `anchor build` and the 43 tests run on every push. See [Continuous integration](#continuous-integration). |
-| Reproducible build | **Confirmed once, on a machine that is not ours.** A GitHub runner rebuilt the program in the pinned container and reproduced the deployed devnet bytes exactly. Nobody outside this project has repeated it. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
-| On-chain IDL | **Not published.** The explorer shows raw bytes rather than named instructions. The command is written down and needs the upgrade authority to run: see [Publishing the IDL on chain](doc/publish-idl-onchain.md). |
+| Reproducible build | **Confirmed once, for a binary that is no longer on chain.** A GitHub runner rebuilt the program in the pinned container and reproduced the devnet bytes exactly, before the custody window was deployed. That run has not been repeated against the binary live today. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
+| On-chain IDL | **Published** on 2026-08-01, in the canonical metadata account `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`. `anchor idl fetch` returns it and its canonical sha256 matches this repository and both consumers. The explorer may still not render Anchor IDLs; fetching works regardless. See [Publishing the IDL on chain](doc/publish-idl-onchain.md), including why the documented command fails and what worked instead. |
 | Known issues | Written down below, **and two of them are about custody**: a mint with a freeze authority can freeze the vault, and the vault's associated token account can be pre-created by a stranger to block a deposit. See [Known limitations](#known-limitations). |
 
 What we do claim: the custody properties below are enforced by account constraints, and each one
@@ -49,10 +49,15 @@ Read on devnet at the time of writing:
 | Executable | yes |
 | ProgramData account | `UKjCxFASvoGPp95tdPDH2F3vyyGnQLHAcKiUGpVDpaR` |
 | Upgrade authority | `4wPhH4dCndAEbdKJS3TC3JF6eeNfC4JrVej4DoYd54jH` |
-| Last deployed in slot | `479522576` |
-| Deployed bytes | 262568 |
-| `sha256` of the deployed bytes (`artifact-sha256`) | `dc0ba21a5a620ef5dd1546c2c9e86eb6d00f9ca438e97bb4e2a5fa09819a8960` |
-| `sha256` of the same bytes without trailing padding (`verify-hash`) | `2c012e78a567584978e48fe1b20cd641d03389ae2e5944402d31eaa548e29779` |
+| Last deployed in slot | `480496830` |
+| ProgramData bytes reserved | 412613 (extended by 150000 on 2026-08-01; see [The size preflight](#the-size-preflight)) |
+| Deployed bytes, without trailing padding | 271121 |
+| `sha256` of the deployed bytes (`artifact-sha256`) | `c067878e8a2a0cae2ca61f8c13c4d0eabd9465025ac353de74ff859b2a465cfc` |
+| `sha256` of the same bytes without trailing padding (`verify-hash`) | `9d9c0679c3496d09e0d2e067b0e7a63002bf435ddff6256837b9114949f464f1` |
+
+The previous deploy, for comparison: slot `479522576`, 262568 bytes, `verify-hash`
+`2c012e78a567584978e48fe1b20cd641d03389ae2e5944402d31eaa548e29779`. That binary had no custody
+window, so its `release` was legal forever.
 
 Two hashes, one binary, and they do not agree. That is expected, not a discrepancy:
 `sha256sum` on the `.so` hashes every byte, while `solana-verify` strips trailing zero bytes
@@ -106,12 +111,11 @@ bytes were produced by the source in this repository, and that you can produce t
 
 ### What you can check right now
 
-> **These hashes describe the binary deployed on devnet, which predates the custody window.** A
-> build of this tree will not match them, on purpose: the source is ahead of the chain and the
-> upgrade has not been performed. To reproduce the deployed bytes, check out the commit before the
-> custody window landed. The new binary is also **bigger than the space reserved on chain**, so the
-> upgrade needs a `solana program extend` first; `scripts/deploy-devnet.sh` checks that before
-> touching anything and prints the exact command.
+> **These hashes describe the binary deployed on 2026-08-01, the one with the custody window.**
+> They were read back from devnet after the upgrade, not predicted from the build. The container
+> rebuild that reproduced the *previous* binary has not been re-run against this one yet, so read
+> the confirmation table below carefully: what is proven for this binary is that the deployed bytes
+> equal the ones built on the machine that deployed them, and nothing more.
 
 ```bash
 git clone https://github.com/ferrosasfp/solana-programs
@@ -125,11 +129,19 @@ solana-verify -u https://api.devnet.solana.com get-program-hash DR5GoMT7sAKzD6wZ
 The last two commands must both print:
 
 ```
-2c012e78a567584978e48fe1b20cd641d03389ae2e5944402d31eaa548e29779
+9d9c0679c3496d09e0d2e067b0e7a63002bf435ddff6256837b9114949f464f1
 ```
 
-and `sha256sum target/deploy/escrow.so` must print
-`dc0ba21a5a620ef5dd1546c2c9e86eb6d00f9ca438e97bb4e2a5fa09819a8960`.
+**`artifact-sha256` stopped being a comparison you can reproduce, and that changed on 2026-08-01.**
+Until then the ProgramData account was sized to fit the binary exactly, so the payload on chain was
+the binary and its hash equalled `sha256sum target/deploy/escrow.so`. The extend added 150000 bytes
+of reserved space, and the loader zero-fills the remainder, so `artifact-sha256` now hashes 412568
+bytes of which about 141000 are padding. No local build will ever produce it. It is published as a
+description of the account, not as a check.
+
+`verify-hash` is the number that still means something, because it is taken after trailing zeros are
+trimmed. On the machine that deployed it, `sha256` of `target/deploy/escrow.so` with trailing zeros
+removed is exactly `9d9c0679...`, which is what devnet reports. That is the comparison to run.
 
 `-u` has to come before the subcommand. It is a global argument read from the top level, and
 placed after `get-program-hash` the tool quietly falls back to mainnet, where this program does
@@ -139,14 +151,15 @@ not exist.
 
 | | |
 |---|---|
-| The deployed bytes equal our local `target/deploy/escrow.so` | **Confirmed**, byte for byte, on the machine that built and deployed it. |
+| The deployed bytes equal our local `target/deploy/escrow.so` | **Confirmed** for the 2026-08-01 binary, on the machine that built and deployed it: devnet reports `verify-hash` `9d9c0679...` and the local artifact with trailing zeros trimmed hashes to the same value. |
 | The binary carries no path from that machine | **Confirmed.** The only absolute path embedded is inside the precompiled platform-tools, identical for everyone using the same Agave version. |
-| A container rebuild reproduces those bytes | **Confirmed**, on a GitHub runner, at commit [`36444ef`](https://github.com/ferrosasfp/solana-programs/commit/36444ef0684bfd3da2b91eb9482ea88d8169da22) ([run 30664488714](https://github.com/ferrosasfp/solana-programs/actions/runs/30664488714)). All three comparisons passed: the rebuild matched the published `artifact-sha256`, it matched the program on devnet, and devnet matched the published `verify-hash`. |
+| A container rebuild reproduces those bytes | **Confirmed for the previous binary, not yet for this one.** A GitHub runner reproduced the pre custody window build at commit [`36444ef`](https://github.com/ferrosasfp/solana-programs/commit/36444ef0684bfd3da2b91eb9482ea88d8169da22) ([run 30664488714](https://github.com/ferrosasfp/solana-programs/actions/runs/30664488714)), matching all three hashes. That run describes a binary that is no longer on chain. The same workflow has not been run against the 2026-08-01 deploy, so for the binary live today this row is **open**. |
 | An independent third party reproduced it | **Not confirmed.** Nobody outside this project has tried yet. A GitHub runner is not our laptop, but it is still our workflow. |
 
-So: the mechanism is wired up, public, and has come back green once on hardware we do not own.
-What is still missing is somebody with no stake in this repository running it and saying so. If it
-does not reproduce on your machine, that is a finding we want to hear about.
+So: the mechanism is wired up and public, and it came back green once, on hardware we do not own,
+for a binary that has since been replaced. Two things are still missing: re-running it against the
+binary that is live now, and somebody with no stake in this repository running it and saying so. If
+it does not reproduce on your machine, that is a finding we want to hear about.
 
 ### Why the build image had to be declared
 
@@ -657,15 +670,14 @@ and a control that cannot fail is worse than no control.
 
 **What it asserts depends on a declared state**, `SOURCE_REPRODUCES_CHAIN` in the workflow:
 
-| | `true` | `false` (today) |
+| | `true` (today) | `false` |
 |---|---|---|
 | deployed program == `verify-hash` published above | checked | checked |
-| rebuilt `.so` == `artifact-sha256` published above | checked | not checked |
+| rebuilt `.so` == `verify-hash` published above | checked | not checked |
 | rebuilt `.so` == program on devnet | checked | **must differ** |
 
-It is set to `false` because the custody window is merged here and not deployed, so a rebuild
-cannot match the chain. That is the honest state, and it is worth being precise about what the
-flag does and does not do:
+It was set back to `true` on 2026-08-01, when the custody window was deployed and the source
+stopped being ahead of the chain. What the flag does and does not do:
 
 - It is **not** a mute switch. With `false` the job *requires* the rebuild to differ from devnet.
   Deploy the program and forget to flip the flag, and the run goes red instead of quietly passing.
@@ -673,15 +685,25 @@ flag does and does not do:
   upgrade nobody announced still turns the workflow red. That is also what the weekly schedule is
   for.
 
+**One comparison changed shape, and it is worth saying why rather than letting it look like a
+weakened control.** The middle row used to compare the rebuilt `.so` against `artifact-sha256`.
+The 2026-08-01 extend padded the ProgramData account, so `artifact-sha256` is no longer reachable
+from any local build and that comparison would now fail forever for a reason unrelated to the
+source. It was replaced by the same comparison against `verify-hash`, which is still reproducible.
+The job it was doing is preserved: pinning the rebuild against this file is what catches somebody
+editing the published hashes to match a chain that moved, and `verify-hash` does that just as well.
+
 The assertion block was exercised against injected hashes in all eight combinations: the two
 that must pass, and the six that must fail (deployed without flipping the flag, chain moved
 unannounced, empty tool output, non-hex garbage, rebuild differing from the chain, rebuild
-differing from this file). All eight behaved as expected.
+differing from this file). All eight behaved as expected. That exercise predates the change to the
+middle row and has not been repeated against it.
 
-The honest gap: **the byte-for-byte claim is not being re-checked on every run right now.** It was
-checked, and passed, at [`36444ef`](https://github.com/ferrosasfp/solana-programs/commit/36444ef0684bfd3da2b91eb9482ea88d8169da22),
-the last commit whose source matched the chain. It starts being checked again on every run the
-moment the custody window is deployed and the flag flips back to `true`.
+The honest gap: **the byte-for-byte claim has not yet come back green for the binary deployed
+today.** It passed at [`36444ef`](https://github.com/ferrosasfp/solana-programs/commit/36444ef0684bfd3da2b91eb9482ea88d8169da22),
+against the previous binary. The first run of this workflow after the deploy is the one that will
+say whether the container still reproduces what is on chain, and it had not completed when this
+was written. If it comes back red, this file is what needs correcting, not the flag.
 
 ### `ci.yml`
 
@@ -737,28 +759,43 @@ For each account it flags, do one of two things, and write down which:
    confirm the list is empty.
 2. **Decide the refund is the right outcome**, and record the decision, including who was told.
 
-Read at the time of writing, on devnet: four `EscrowState` accounts exist, three are terminal and
-one is blocking, `BmHDdjKLCJXcdzd8CqbHaeRWY9utbviZduXhbnH5Jm9F`, holding 10.000000 units of the test
-mint with a deadline nine days past. Do not trust that sentence, run the script.
+**What was actually done, on 2026-08-01, before the upgrade.** The script found four `EscrowState`
+accounts, three terminal and one blocking: `BmHDdjKLCJXcdzd8CqbHaeRWY9utbviZduXhbnH5Jm9F`, holding
+10.000000 units of the test mint with a deadline nine days past. Option 1 was taken, and the exit
+chosen was **the refund**, in tx
+[`kMF1DtacRjmreipiN7ce1vgLYB1GmPjRLuP64Jqf17J6tbKEix6h5gsT5nidNf6vEt7QJ544cctEJNAwbH522cE`](https://explorer.solana.com/tx/kMF1DtacRjmreipiN7ce1vgLYB1GmPjRLuP64Jqf17J6tbKEix6h5gsT5nidNf6vEt7QJ544cctEJNAwbH522cE?cluster=devnet).
+The vault went from 10 to 0 and the sender from 78 to 88.
+
+The refund was chosen over the release for two reasons. It is legal both before and after the
+upgrade, so the outcome does not depend on when the deploy lands, which removes the one way door
+entirely rather than racing it. And it is what the account meant: the deadline had passed and
+nobody had completed the fiat leg.
+
+The `remittance_id` needed to rebuild the instruction was not on file. It was read out of the
+original deposit transaction's instruction data, bytes 8 to 24, and the script that sent the refund
+aborted unless the PDA derived from it matched the blocking address exactly.
+
+After that, `list-live-escrows.py --exit-nonzero-if-blocking` exited 0: no escrow was `Deposited`
+with an expired deadline. Do not trust these sentences, run the script.
 
 ### The size preflight
 
 `anchor deploy` on an upgradeable program writes into the ProgramData account that already exists.
-That account was sized when the program was first deployed and **does not grow by itself**. The
-binary in this tree no longer fits in it:
+That account was sized when the program was first deployed and **does not grow by itself**. Before
+2026-08-01 the binary in this tree no longer fitted in it:
 
-| | |
-|---|---|
-| ProgramData account | `UKjCxFASvoGPp95tdPDH2F3vyyGnQLHAcKiUGpVDpaR` |
-| Bytes allocated | 262,613 |
-| Loader header | 45 |
-| Usable for the binary | 262,568 |
-| This tree's `escrow.so` | 270,712 |
-| Missing | **8,144** |
+| | Before the extend | After |
+|---|---|---|
+| ProgramData account | `UKjCxFASvoGPp95tdPDH2F3vyyGnQLHAcKiUGpVDpaR` | same account |
+| Bytes allocated | 262,613 | 412,613 |
+| Loader header | 45 | 45 |
+| Usable for the binary | 262,568 | 412,568 |
+| This tree's `escrow.so` | 271,136 | 271,136 |
+| | **8,568 missing** | **141,432 of headroom** |
 
 Without the extend, the deploy fails inside the loader with a message that never mentions the size,
 after uploading the whole binary, and leaves a buffer account holding your SOL. So the deploy script
-now runs a read only check first and refuses to continue:
+runs a read only check first and refuses to continue:
 
 ```bash
 python3 scripts/programdata-capacity.py \
@@ -767,15 +804,25 @@ python3 scripts/programdata-capacity.py \
 ```
 
 It signs nothing and sends no transaction. When the binary does not fit it prints the command,
-already filled in:
+already filled in, using the exact deficit.
+
+**What was run, and why not the exact deficit.** The command executed was
 
 ```bash
-solana program extend DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x 8144 --url devnet
+solana program extend DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x 150000 --url devnet
 ```
 
-That number is the exact deficit, which leaves zero headroom: the next build that grows by a byte
-needs another extend. Passing a larger number is fine, it costs rent for the added bytes and cannot
-be undone.
+The deficit was 8,568. Passing exactly that leaves zero headroom, so the next build that grows by a
+single byte needs another extend, and an extend cannot be undone. 150,000 buys room for roughly half
+the current binary again, which covers the next phase without repeating an irreversible operation.
+It cost **1.044 SOL** of additional rent, taking the account's rent-exempt minimum from 1.82867736 to
+2.87267736 SOL. On devnet that is faucet SOL; **on mainnet that number is real money and should be
+budgeted before the first deploy**, because sizing the account generously up front is cheaper than
+extending it later.
+
+One side effect worth knowing, because it silently invalidates a check: after an extend, the
+`artifact-sha256` published for the program stops being reproducible from a local build. See
+[Reproducing the deployed binary](#reproducing-the-deployed-binary).
 
 The numbers above were read from devnet. Re-run the script rather than trusting the table: the
 artifact changes with every build.
@@ -791,6 +838,23 @@ What makes it tolerable today, and it is a fact worth checking rather than a pro
 builds `close` at all right now.** It is a forward constraint on whoever writes the first one, not a
 live cut. If that changes, the client and the program have to be released together, with the escrow
 lifecycle drained in between.
+
+Checked again on 2026-08-01, before the deploy, by grepping both consumers. `chaski-v3` carries
+`close` in its vendored IDL and never invokes it; `wasiai-facilitator` signs `release` and reads
+`EscrowState`, and does not touch `close` either. So the deploy went ahead in the only order that
+was safe for everything else: consumers first, program second.
+
+### What the consumers needed before this could be deployed
+
+The custody window is not backward compatible with a client that asks for a short deadline, and one
+did. `chaski-v3` derived the escrow deadline from `quote.expiresAt`, and the FX quote lives for ten
+minutes, which is below `MIN_CUSTODY_SECS`. Deploying the program without touching the client would
+have turned **every** Chaski deposit into `DeadlineTooSoon`.
+
+The two ideas had been conflated: when the *rate* expires is not how long the operator has to
+deliver. `chaski-v3` now sends `now + 2h` and no longer reads `expiresAt` for this, and both
+consumers re-pinned the IDL. That went out before the program, which is safe in that order because
+a longer deadline was always legal under the old program.
 
 ## Licence
 

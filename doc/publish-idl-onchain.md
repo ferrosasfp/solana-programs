@@ -4,8 +4,13 @@ Right now the explorer shows this program as raw bytes. Publishing the IDL is wh
 `Unknown instruction` into `deposit`, `release`, `refund` with named accounts and decoded
 arguments, for anybody looking at a transaction without cloning the repository.
 
-**Nothing in this document has been executed.** Everything below was read off the tools and the
-chain, but the write itself is a decision for whoever holds the upgrade authority.
+**Executed on 2026-08-01.** The IDL is published. `anchor idl fetch` returns it, and its canonical
+sha256 is `fb64c937dbdab7a58045e663a85724808c4539707fedbdf244e11a28dbe5c071`, the same value this
+repository builds and the same one pinned in `chaski-v3` and `wasiai-facilitator`.
+
+**The command in this document does not work, and the way it fails is worth knowing.** See
+[What actually worked](#what-actually-worked) at the end. The rest of the document is kept as it was
+written, because the reasoning about authority and ordering is still correct.
 
 ## Read this first
 
@@ -124,3 +129,61 @@ The sequence:
 
 Step 4 is owed regardless of whether the IDL is published on chain: the custody window already
 changed the IDL, so the vendored copies in both consumers are stale as of today.
+
+**All four ran on 2026-08-01, in that order.** Step 4 ran first in practice, because the consumers
+had to ship before the program did for an unrelated reason (see the README section on what the
+consumers needed). Both now pin `fb64c937...`.
+
+## What actually worked
+
+`anchor idl init` **fails**, and so does the raw `program-metadata write` it shells out to. Both
+print the same thing and nothing else:
+
+```
+[Error] The provided transaction plan failed to execute. See the `transactionPlanResult`
+attribute for more details.
+```
+
+`transactionPlanResult` is never printed, so the message says nothing about the cause. Chasing it
+on chain is more informative: every transaction the tool sent **succeeded**, `err: None`. The
+writes were landing. What was left behind was a metadata account holding 2862 bytes of a zlib
+stream that needs about 4505, so `anchor idl fetch` returned hex that will not decompress.
+
+That is the part worth remembering: **the failure mode is a half written account, not an absent
+one.** A consumer calling `anchor idl fetch` against it gets a truncated stream rather than a clean
+"not found". It fails loudly, which is the good case, but the state looks published and is not.
+
+What worked was the buffer path, uploading the payload separately and then creating the account
+from it in one step:
+
+```bash
+KEY=<path to the upgrade authority keypair>
+
+# 1. upload the IDL into a buffer account (this one succeeds where the direct write does not)
+npx --yes --package=@solana-program/program-metadata@0.5.1 -- program-metadata \
+  --rpc https://api.devnet.solana.com --keypair "$KEY" \
+  create-buffer target/idl/escrow.json
+# -> buffer: <BUFFER_ADDRESS>
+
+# 2. if a half written metadata account already exists, close it. `create` will not overwrite,
+#    and `write`/`update` fail against it exactly as above.
+npx --yes --package=@solana-program/program-metadata@0.5.1 -- program-metadata \
+  --rpc https://api.devnet.solana.com --keypair "$KEY" \
+  close idl DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x
+
+# 3. create the canonical account from the buffer
+npx --yes --package=@solana-program/program-metadata@0.5.1 -- program-metadata \
+  --rpc https://api.devnet.solana.com --keypair "$KEY" \
+  create idl DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x --buffer <BUFFER_ADDRESS>
+```
+
+`write --buffer` against the existing partial account still failed, so step 2 is not optional when
+a previous attempt left something behind. Growing the account in place is where it breaks;
+creating it at full size does not.
+
+**`anchor deploy` runs the broken path automatically.** It tries to write the IDL right after the
+upgrade lands, so the program deploy reports `Error: Failed to initialize IDL` and exits non zero
+**even though the upgrade itself succeeded**. Read the signature it printed and check the chain
+before assuming the deploy failed. On 2026-08-01 the upgrade landed in
+`4imyuMmnFgUD2CXk2jMcTRSEbRyoyco9zNxiH9Rq6oZJVQBEcWDCBTd4dskNaczWk8SyvwAVhMBqWzWVRMb8iT2K` and the
+non zero exit was entirely about this IDL step.
