@@ -1,8 +1,22 @@
 # Decision needed: the escrow deadline is the quote's expiry, and the quote lives 10 minutes
 
-**Status: open. Somebody has to choose, and both options cost something.**
-Nothing in this repository implements either option. This document exists so the choice is made
-deliberately and before the program is deployed, not discovered by a deposit that reverts.
+**Status: CLOSED 2026-08-01. Option A was taken and shipped before the program was deployed.**
+
+The client computes the escrow deadline itself now, as `now + CUSTODY_WINDOW_SECS` (2 hours), and
+no longer reads `quote.expiresAt` for it. See `chaski-v3/src/infrastructure/solana-wallet.ts`,
+constant `CUSTODY_WINDOW_SECS`, merged in `def357a`. The program was deployed after that, in that
+order, which is the only order that does not break the deposit path.
+
+The rest of this document is kept as it was written, because the reasoning and the cost of option
+B are still the record of why A was chosen.
+
+**One thing option A did not close, and it is a real follow up.** This document already pointed at
+`flow.tsx:856`, where the UI decides whether the refund is available from the same quote expiry.
+That line was correct while both instants were the same and it is now wrong by design: the UI says
+the window opens about 110 minutes before it actually does, and `RefundLockedNotice` renders that
+wrong instant as a specific time. No money is at risk, the authoritative guard reads the chain and
+fails closed before signing, but the interface states something false about when somebody can have
+their money back. Tracked separately.
 
 ## The fact
 

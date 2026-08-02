@@ -313,11 +313,17 @@ change them is a measurement of how long the fiat leg actually takes end to end,
 exist yet. And if that measurement ever exceeds 24 hours, raising the ceiling is the wrong answer:
 that is a product finding, not a constant.
 
-The floor also does not fit the client that exists today, which derives the deadline from a quote
-that expires in 10 minutes: every deposit it builds would revert with `DeadlineTooSoon`. That is a
-product decision with two possible answers and a cost on both sides, written up in
-[`doc/decisions/deadline-vs-quote-ttl.md`](doc/decisions/deadline-vs-quote-ttl.md). It has to be
-decided before this program is deployed and the client is pointed at it.
+The floor did not fit the client that existed until 2026-08-01, which derived the deadline from a
+quote that expires in 10 minutes: every deposit it built would have reverted with
+`DeadlineTooSoon`. **That was decided and closed before the deploy, taking option A**: the client
+now computes the deadline itself, as `now + 2h`, and no longer reads the quote's expiry for this.
+The reasoning and the cost of the alternative are in
+[`doc/decisions/deadline-vs-quote-ttl.md`](doc/decisions/deadline-vs-quote-ttl.md).
+
+Two hours rather than the floor exactly, and the reason generalises to any client: the `now` in
+`deposit`'s comparison is the **validator's** clock when the instruction executes, not the client's
+when it builds the transaction. A client that asks for exactly `now + MIN_CUSTODY_SECS` loses any
+transaction that takes more than zero seconds to land. Leave margin.
 
 ## On-chain state
 
@@ -584,9 +590,9 @@ solana program dump DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x /tmp/escrow.so 
 strings -n 4 /tmp/escrow.so | grep -A 16 'BEGIN SECURITY.TXT'
 ```
 
-That returns nothing against the currently deployed binary, which predates the
-[`security_txt!`](programs/escrow/src/lib.rs) block. It starts working when this source is
-deployed.
+That works against the binary deployed on 2026-08-01. Read back from devnet after the deploy, the
+block is present at offset 232503 of the dump and carries the contact, the policy URL, the source
+repository, and `auditors: None`, which is the honest value and stays that way until it is not.
 
 ## The mint
 
