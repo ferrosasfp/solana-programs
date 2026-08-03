@@ -96,10 +96,13 @@ public and none of it is a secret we are keeping.
   (`4wPhH4dCndAEbdKJS3TC3JF6eeNfC4JrVej4DoYd54jH`). Whoever holds it can replace
   every guarantee the program makes. It has not been revoked and we are not
   claiming immutability.
-- **The source is ahead of the chain.** The custody window in this tree is not
-  deployed. A finding against `main` may not be a finding against the deployed
-  bytes, and the reverse is also true. Say which one you tested; if you are not
-  sure, say that instead of guessing.
+- **The source and the chain agree today, and that can change without warning.**
+  The custody window in this tree was deployed to devnet on 2026-08-01, in slot
+  `480496830`, and the README publishes the hashes of those bytes. But the upgrade
+  authority above can replace the program at any moment, so a finding against
+  `main` is not automatically a finding against the deployed bytes. Say which one
+  you tested; if you are not sure, say that instead of guessing. `scripts/onchain-hash.py`
+  tells you what is actually running.
 - **43 tests, behaviour driven.** No fuzzing, no formal verification, no symbolic
   execution. If your tool found something ours did not, that is expected.
 

@@ -507,14 +507,14 @@ trivial, use another `remittance_id`, and no funds are ever at risk. It is **pre
 branch does not introduce it, and it is one of the first things an external reviewer finds, so it is
 written here rather than left to be discovered.
 
-**Rent could be griefed by sending dust to the vault. Fixed in this source, not yet deployed.**
+**Rent could be griefed by sending dust to the vault. Fixed, and the fix is live on devnet.**
 `release` and `refund` move the recorded amount, so the beneficiary and the sender always get
 what they are owed. But the vault is an associated token account at a derivable address, so
 anyone can transfer tokens into it. If they did, the leftover balance made `close` fail with the
 SPL error `NonNativeHasBalance`, because it calls `CloseAccount` on a non empty account, and the
 rent of two accounts stayed dead. `close` now moves the vault balance to the sender before closing
-it, covered by `escrow-window.ts` D1 and D1b. **The devnet program still has the old behaviour
-until this source is deployed.**
+it, covered by `escrow-window.ts` D1 and D1b. The sweep landed before the 2026-08-01 deploy and
+shipped with it in slot `480496830`, so the program running on devnet has this behaviour.
 
 Say what that sweep does, precisely: it transfers **the whole of `vault.amount`, with no upper
 bound**, not "the dust". If a third party sends a thousand tokens into the vault of an escrow that

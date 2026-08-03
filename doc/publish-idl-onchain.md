@@ -112,10 +112,10 @@ different hash for identical content.
 ## Order of operations
 
 Publish the IDL **after** the program is upgraded, not before. The IDL describes the instructions
-the deployed bytes actually have, and the source in this repository is currently ahead of the chain
-(see the README). Publishing this tree's IDL against the older deployed program would hand clients
-a description with three error codes and a `close` account list that the deployed program does not
-have.
+the deployed bytes actually have, so publishing a newer tree's IDL against an older deployed program
+would hand clients a description with error codes and a `close` account list the program does not
+have. This was the situation before 2026-08-01; the custody window and its IDL are both live now
+(see the README), and the rule stands for the next upgrade.
 
 The sequence:
 
