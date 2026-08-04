@@ -27,10 +27,20 @@
 //! No instruction can send tokens to an address that was not written into
 //! `EscrowState` at deposit time, and no key can move the vault anywhere else.
 //!
-//! `deadline` is rejected at deposit if it falls outside `[now + MIN_CUSTODY_SECS, now +
+//! `deadline` is clamped at deposit to `[now + MIN_CUSTODY_SECS, now +
 //! MAX_CUSTODY_SECS]` (1 h to 24 h), so the sender's worst case wait before the
 //! refund path opens is bounded by the program and not by the operator.
 //!
+// ⚠️ CORRECCION 2026-08-04, y va en `//` a proposito (los `//!` viajan al IDL):
+// la palabra "clamped" de arriba es FALSA. `deposit` NO clampea en silencio: RECHAZA
+// con `DeadlineTooSoon` / `DeadlineTooLate` (los `require!` de este mismo archivo, en
+// el cuerpo de `deposit`). El efecto para el remitente es el mismo techo y el mismo
+// piso, pero un cliente que asuma clamping va a mandar un deadline fuera de rango y
+// recibir un error en vez de un valor ajustado.
+// NO se corrige el `//!` porque Anchor copia los doc comments al IDL: cambiar esa
+// linea mueve el sha256 canonico, que esta publicado en cadena y pinneado por los dos
+// consumidores. Medido: al cambiarla, el hash pasa de fb64c937... a otro y el test
+// AC-3 del facilitator se pone rojo. Se corrige cuando se republique el IDL.
 //! # What it deliberately does not do
 //!
 //! No fees, no partial release, no dispute resolution, and no admin instruction
@@ -467,12 +477,23 @@ pub struct Deposit<'info> {
     #[account(mut)]
     pub sender: Signer<'info>,
 
+    // ⚠️ CORRECCION 2026-08-04, y va en `//` a proposito (los `///` viajan al IDL):
+    // el doc comment de abajo justifica NO clavar el mint acá citando un control
+    // compensatorio que HOY NO EXISTE. Dice que el co-firmante off-chain "se niega a
+    // firmar un depósito con un mint inesperado". Ese co-firmante es CR-1 del
+    // facilitator, y se verificó que NUNCA compara el mint contra nada: el índice del
+    // MINT en las cuentas del deposit no se contrasta con `SOLANA_USDC_MINT`, que sí se
+    // usa en las otras dos rutas del mismo servicio.
+    // O sea: un comentario justifica la ausencia de un guard citando otro guard que no
+    // está. Mientras eso siga así, el programa acepta cualquier mint y NADIE lo filtra.
+    // NO se corrige el `///` porque Anchor lo copia al IDL y eso mueve el sha256
+    // canónico publicado en cadena y pinneado por los dos consumidores (medido: el test
+    // AC-3 del facilitator se pone rojo). Se corrige cuando se republique el IDL.
     /// Acepta CUALQUIER mint, y es una decisión, no un olvido. El programa es infraestructura de
     /// escrow genérica; "qué token vale un dólar" es política de producto y vive en el componente
-    /// que está en el camino crítico de todos los depósitos (el co-firmante off-chain). Un control
-    /// compensatorio que rechace un mint inesperado está pendiente de implementar (CR-1), pero no
-    /// existe aún. Clavarlo acá obligaría a dos builds, dos IDL, dos hashes pinneados y un redespliegue
-    /// para rotarlo.
+    /// que está en el camino crítico de todos los depósitos (el co-firmante off-chain, que se
+    /// niega a firmar un depósito con un mint inesperado). Clavarlo acá obligaría a dos builds,
+    /// dos IDL, dos hashes pinneados y un redespliegue para rotarlo.
     ///
     /// LA CONDICIÓN QUE DA VUELTA ESTA DECISIÓN, escrita para que se pueda comprobar: el día que
     /// exista un barrido que descubra depósitos on-chain y los tome por buenos SIN esa co-firma,
