@@ -27,7 +27,7 @@
 //! No instruction can send tokens to an address that was not written into
 //! `EscrowState` at deposit time, and no key can move the vault anywhere else.
 //!
-//! `deadline` is clamped at deposit to `[now + MIN_CUSTODY_SECS, now +
+//! `deadline` is rejected at deposit if it falls outside `[now + MIN_CUSTODY_SECS, now +
 //! MAX_CUSTODY_SECS]` (1 h to 24 h), so the sender's worst case wait before the
 //! refund path opens is bounded by the program and not by the operator.
 //!
@@ -469,9 +469,10 @@ pub struct Deposit<'info> {
 
     /// Acepta CUALQUIER mint, y es una decisión, no un olvido. El programa es infraestructura de
     /// escrow genérica; "qué token vale un dólar" es política de producto y vive en el componente
-    /// que está en el camino crítico de todos los depósitos (el co-firmante off-chain, que se
-    /// niega a firmar un depósito con un mint inesperado). Clavarlo acá obligaría a dos builds,
-    /// dos IDL, dos hashes pinneados y un redespliegue para rotarlo.
+    /// que está en el camino crítico de todos los depósitos (el co-firmante off-chain). Un control
+    /// compensatorio que rechace un mint inesperado está pendiente de implementar (CR-1), pero no
+    /// existe aún. Clavarlo acá obligaría a dos builds, dos IDL, dos hashes pinneados y un redespliegue
+    /// para rotarlo.
     ///
     /// LA CONDICIÓN QUE DA VUELTA ESTA DECISIÓN, escrita para que se pueda comprobar: el día que
     /// exista un barrido que descubra depósitos on-chain y los tome por buenos SIN esa co-firma,

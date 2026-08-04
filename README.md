@@ -345,6 +345,11 @@ Rent exemption, measured by the test suite against the in-process bank:
 - `EscrowState` 154 bytes, 1,962,720 lamports (0.00196 SOL)
 - `EscrowIndex` 558 bytes, 4,774,560 lamports (0.00477 SOL)
 
+**Who pays what:** The sender (`payer = sender` in the Deposit context) pays the rent to create and
+rent-exempt both accounts. The transaction network fee (approximately 0.005 SOL per transaction) is
+paid by the key signing the transaction; for deposits initiated by users, that is the sender; for
+releases and refunds initiated by the facilitator, that is the facilitator key.
+
 A `deposit` plus a `register_escrow` in one atomic transaction consumed 57,326 compute units.
 
 ### The layout is deliberately frozen
@@ -563,9 +568,10 @@ The suite is behaviour driven and deliberately adversarial, but that is not the 
 ## Upgrade authority
 
 The program is deployed under the upgradeable BPF loader, and the upgrade authority is
-`4wPhH4dCndAEbdKJS3TC3JF6eeNfC4JrVej4DoYd54jH`, a single devnet key that is also the fee payer
-for our devnet deploys. Anyone can read this in thirty seconds with `solana program show`, so we
-would rather state it plainly: **today one key can replace this program's code on devnet.**
+`4wPhH4dCndAEbdKJS3TC3JF6eeNfC4JrVej4DoYd54jH`, a single devnet key. This is also the key that pays
+the network fee (approximately 0.005 SOL per deposit transaction) for facilitator operations. Today,
+one key can replace this program's code on devnet. Anyone can read this in thirty seconds with
+`solana program show`, so we would rather state it plainly: **this is a known operational risk.**
 
 That is deliberate for this stage. The program is on devnet with a test mint and no real value,
 and it is still changing, as the two recovery instructions show. An immutable program is a bad
@@ -604,8 +610,8 @@ That is a decision, not an omission, and it has a condition that would reverse i
 generic escrow infrastructure, while "which token counts as a dollar" is product policy: pinning it
 in the binary would mean two builds for devnet and mainnet, two IDLs, two pinned hashes, and a
 redeploy to rotate it. So the allow list belongs in the component that sits on the critical path of
-every deposit, which today is the off-chain co-signer that refuses to sign a deposit carrying an
-unexpected mint. **What would change this:** the day anything sweeps the chain for deposits and
+every deposit. A compensatory control that rejects an unexpected mint is pending implementation in
+the off-chain co-signer (WKH-CR-1) and does not yet exist. **What would change this:** the day anything sweeps the chain for deposits and
 takes them as good without that co-signature, the mint has to be pinned on chain, because at that
 point a self funded deposit with an attacker's mint would enter a product path. The enumerators
 that exist today only feed the refund, which is harmless.
