@@ -1,0 +1,8 @@
+  51 passing (4s)
+  3 failing
+    1) 12. close removes exactly the entry of the escrow it closes and leaves the rest in order (AC-1)
+    2) 14. 33 deposit→register→release→close cycles with the SAME sender all succeed (AC-3)
+    3) 21. close with and without the index: report computeUnitsConsumed
+  1) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+  2) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+  3) escrow-index — enumerable per-sender escrow index (HU-SOL-20)

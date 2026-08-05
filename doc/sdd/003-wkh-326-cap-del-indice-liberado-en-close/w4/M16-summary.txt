@@ -1,0 +1,8 @@
+  51 passing (2s)
+  3 failing
+    1) 12. close removes exactly the entry of the escrow it closes and leaves the rest in order (AC-1)
+    2) 18. close with an index that does not contain the id confirms and leaves entries alone (AC-7)
+    3) 21. close with and without the index: report computeUnitsConsumed
+  1) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+  2) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+  3) escrow-index — enumerable per-sender escrow index (HU-SOL-20)

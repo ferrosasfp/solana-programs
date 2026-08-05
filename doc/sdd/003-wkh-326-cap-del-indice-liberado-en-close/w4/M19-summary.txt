@@ -1,0 +1,6 @@
+  52 passing (2s)
+  2 failing
+    1) 13b. leaving the escrowIndex key out does NOT omit the account: the client sends the PDA (CD-14)
+    2) 15. close with the VICTIM's index reverts ConstraintSeeds and leaves that index untouched (AC-4)
+  1) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+  2) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
