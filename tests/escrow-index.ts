@@ -304,14 +304,15 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
       .rpc();
   }
 
-  // W0 (CD-10): this helper carries the SIX accounts that `close` declares in the CURRENTLY built
-  // IDL. The optional `escrow_index` account does not exist in target/idl/escrow.json yet, so
-  // naming the key here would make the W0 tests fail for the wrong reason. W1 adds the 4th
-  // parameter, and from W1 on every `.close(` in this repo passes the key explicitly (CD-14).
+  // CD-14: the key `escrowIndex` is ALWAYS present in the accounts object. Leaving it out does NOT
+  // omit the account — the client derives ["escrow-index", sender] from the IDL seeds and sends it
+  // anyway, and a `close` for a sender with no index then reverts with AccountNotInitialized
+  // (3012). Test 13b keeps that footgun executable instead of only written down.
   function close(
     remittanceId: Uint8Array,
     escrowState: PublicKey,
-    vault: PublicKey
+    vault: PublicKey,
+    escrowIndex: PublicKey | null = null
   ) {
     return program.methods
       .close(Array.from(remittanceId))
@@ -322,6 +323,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
         vault,
         senderAta,
         tokenProgram: TOKEN_PROGRAM_ID,
+        escrowIndex,
       })
       .signers([sender])
       .rpc();
@@ -811,7 +813,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
     ).to.deep.equal([hex(idA), hex(idB)]);
 
     await release(idA, a.escrowState, a.vault);
-    await close(idA, a.escrowState, a.vault);
+    await close(idA, a.escrowState, a.vault, pda);
 
     // Exactly [B]: [A,B] means the retain never ran, [] means it wiped the index, [B,A] means it
     // reordered. Each of the three is a distinct bug and each shows up as a different diff here.
@@ -837,7 +839,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
       await register(id, escrowState); // i = 32 is the one that reverts before this HU
       registersConfirmed++;
       await release(id, escrowState, vault);
-      await close(id, escrowState, vault);
+      await close(id, escrowState, vault, pda); // the index exists: register ran in this same cycle
       perCycleLen.push(
         (await program.account.escrowIndex.fetch(pda)).entries.length
       );

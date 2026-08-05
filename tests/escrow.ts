@@ -511,6 +511,9 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
           vault,
           senderAta, // sweep destination, new account in this instruction
           tokenProgram: TOKEN_PROGRAM_ID,
+          // Explicit null, never an absent key: leaving the key out makes the client derive
+          // ["escrow-index", sender] from the IDL seeds and send it anyway (CD-14).
+          escrowIndex: null,
         })
         .signers([sender])
         .rpc(),
@@ -548,6 +551,9 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
         vault: first.vault,
         senderAta, // sweep destination, new account in this instruction
         tokenProgram: TOKEN_PROGRAM_ID,
+        // Explicit null: this sender never called register_escrow, so the index PDA does not
+        // exist. Omitting the key would send it anyway and revert with 3012 (CD-14).
+        escrowIndex: null,
       })
       .signers([sender])
       .rpc();

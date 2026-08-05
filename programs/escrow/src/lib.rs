@@ -332,6 +332,15 @@ pub mod escrow {
         );
         anchor_spl::token::close_account(cpi_ctx)?;
         // escrow_state se cierra automáticamente por el constraint `close = sender` del Context.
+
+        // El índice es OPCIONAL: si el caller mandó `null` no hay nada que limpiar (ese es el caso
+        // de un sender que nunca llamó `register_escrow`). Va al final del cuerpo sólo para dejar
+        // el bloque de CPIs de arriba sin tocar: los constraints del Context — incluido
+        // `is_terminal()` — corren antes que todo esto, así que un `close` rechazado no llega acá.
+        // Misma expresión que `deregister_escrow`, a propósito duplicada y no factorizada.
+        if let Some(index) = ctx.accounts.escrow_index.as_mut() {
+            index.entries.retain(|e| *e != remittance_id);
+        }
         Ok(())
     }
 
@@ -684,6 +693,30 @@ pub struct Close<'info> {
     pub sender_ata: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
+
+    /// Índice del sender, cuenta OPCIONAL. Si se la pasa, `close` saca de `entries` el
+    /// `remittance_id` que está cerrando; si se la omite, `close` no la lee ni la crea (un sender
+    /// que nunca llamó `register_escrow` no tiene esta PDA y su `close` tiene que funcionar igual).
+    ///
+    /// Omitirla se escribe `escrowIndex: null` EXPLÍCITO. Dejar la clave afuera del objeto de
+    /// cuentas NO la omite: el cliente deriva la PDA `["escrow-index", sender]` a partir de las
+    /// seeds que declara este IDL y la manda igual, y si esa cuenta no existe la tx revierte con
+    /// `AccountNotInitialized` (3012), un error que no nombra la palabra "opcional" y manda a
+    /// buscar donde no es.
+    ///
+    /// Omitirla cuando el índice SÍ existe y SÍ contiene el id no revierte: deja la entrada
+    /// colgada, ocupando uno de los 32 lugares hasta que alguien llame `deregister_escrow` con ese
+    /// id. O sea que la omisión reintroduce, para ese id, el cap monótono que esta cuenta existe
+    /// para evitar.
+    ///
+    /// Regla para el cliente: un `getAccountInfo` sobre `["escrow-index", sender]` antes de armar
+    /// la tx. Si devuelve una cuenta, pasarla; si devuelve null, `null` explícito.
+    #[account(
+        mut,
+        seeds = [b"escrow-index", sender.key().as_ref()],
+        bump = escrow_index.bump
+    )]
+    pub escrow_index: Option<Account<'info, EscrowIndex>>,
 }
 
 #[derive(Accounts)]
