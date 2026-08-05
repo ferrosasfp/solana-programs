@@ -1,0 +1,30 @@
+
+ RUN  v4.1.8 /home/ferdev/.openclaw/workspace/wasiai-facilitator
+
+ ❯ src/chains/escrow-idl.hash.test.ts (4 tests | 1 failed) 8ms
+     × AC-3: coincide con solana-programs (fuente de verdad) 5ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/chains/escrow-idl.hash.test.ts > WKH-227 AC-2/AC-3 · escrow IDL canonical hash lock > AC-3: coincide con solana-programs (fuente de verdad)
+AssertionError: expected 'bfbdfe5aedd55d68e6dda4663b5d26daada81…' to be 'fb64c937dbdab7a58045e663a85724808c453…' // Object.is equality
+
+Expected: "fb64c937dbdab7a58045e663a85724808c4539707fedbdf244e11a28dbe5c071"
+Received: "bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922"
+
+ ❯ src/chains/escrow-idl.hash.test.ts:86:36
+     84|     () => {
+     85|       const idl: unknown = JSON.parse(readFileSync(SIBLING, 'utf8'));
+     86|       expect(canonicalSha256(idl)).toBe(ESCROW_IDL_SHA256);
+       |                                    ^
+     87|     },
+     88|   );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 passed (4)
+   Start at  13:59:31
+   Duration  148ms (transform 38ms, setup 0ms, import 51ms, tests 8ms, environment 0ms)
+

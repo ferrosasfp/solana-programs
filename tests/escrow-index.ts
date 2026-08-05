@@ -1036,4 +1036,194 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
     ).to.deep.equal([hex(idB)]);
     expect(await context.banksClient.getAccount(a.escrowState)).to.equal(null);
   });
+
+  // ---- T19/T20: the interface, pinned against the BUILT artifact ----------
+  //
+  // The five instructions below are pinned to the values read on 2026-08-05 from the IDL VENDORED
+  // in chaski-v3 (src/infrastructure/solana/escrow-idl.ts), i.e. the pre-WKH-326 artifact, not from
+  // the build this branch produces. Copying them out of our own new build would only prove the file
+  // equals itself.
+
+  it("19. the built IDL declares 6 instructions, the 6 usual discriminators, and escrow_index last in close (AC-8)", () => {
+    const ixs = (idl as any).instructions;
+    expect(ixs.map((i: any) => i.name).sort()).to.deep.equal([
+      "close",
+      "deposit",
+      "deregister_escrow",
+      "refund",
+      "register_escrow",
+      "release",
+    ]);
+
+    const disc: Record<string, number[]> = {
+      close: [98, 165, 201, 177, 108, 65, 206, 96],
+      deposit: [242, 35, 198, 137, 82, 225, 242, 182],
+      deregister_escrow: [226, 232, 192, 96, 102, 196, 211, 162],
+      refund: [2, 96, 183, 251, 63, 208, 46, 46],
+      register_escrow: [200, 17, 194, 170, 224, 144, 127, 166],
+      release: [253, 249, 15, 206, 28, 127, 193, 241],
+    };
+    for (const [name, d] of Object.entries(disc)) {
+      const ix = ixs.find((i: any) => i.name === name);
+      assert.isDefined(ix, `${name} must exist in the built IDL`);
+      expect(ix.discriminator, `${name} discriminator moved`).to.deep.equal(d);
+    }
+
+    // CD-15: the new account goes LAST, so every position a client already builds keeps its index.
+    const close = ixs.find((i: any) => i.name === "close");
+    expect(close.accounts.map((a: any) => a.name)).to.deep.equal([
+      "sender",
+      "mint",
+      "escrow_state",
+      "vault",
+      "sender_ata",
+      "token_program",
+      "escrow_index",
+    ]);
+    expect(close.accounts[6].optional, "escrow_index must be optional").to.equal(
+      true
+    );
+    expect(close.args.map((a: any) => a.name)).to.deep.equal(["remittance_id"]);
+  });
+
+  it("20. the other five instructions keep their accounts, args and discriminator (AC-9)", () => {
+    const expected: Record<string, string[]> = {
+      deposit: [
+        "sender",
+        "mint",
+        "escrow_state",
+        "vault",
+        "sender_ata",
+        "token_program",
+        "associated_token_program",
+        "system_program",
+      ],
+      release: [
+        "authority",
+        "sender",
+        "beneficiary",
+        "mint",
+        "escrow_state",
+        "vault",
+        "beneficiary_ata",
+        "token_program",
+        "associated_token_program",
+      ],
+      refund: [
+        "sender",
+        "mint",
+        "escrow_state",
+        "vault",
+        "sender_ata",
+        "token_program",
+        "associated_token_program",
+      ],
+      register_escrow: [
+        "sender",
+        "escrow_state",
+        "escrow_index",
+        "system_program",
+      ],
+      deregister_escrow: ["sender", "escrow_index"],
+    };
+    const expectedArgs: Record<string, string[]> = {
+      deposit: [
+        "remittance_id",
+        "beneficiary",
+        "authority",
+        "amount",
+        "deadline",
+      ],
+      release: ["remittance_id"],
+      refund: ["remittance_id"],
+      register_escrow: ["remittance_id"],
+      deregister_escrow: ["remittance_id"],
+    };
+
+    for (const [name, accounts] of Object.entries(expected)) {
+      const ix = (idl as any).instructions.find((i: any) => i.name === name);
+      assert.isDefined(ix, `${name} must exist in the built IDL`);
+      expect(
+        ix.accounts.map((a: any) => a.name),
+        `${name} account list changed`
+      ).to.deep.equal(accounts);
+      expect(
+        ix.accounts.filter((a: any) => a.optional).map((a: any) => a.name),
+        `${name} must have no optional account`
+      ).to.deep.equal([]);
+      expect(
+        ix.args.map((a: any) => a.name),
+        `${name} args changed`
+      ).to.deep.equal(expectedArgs[name]);
+    }
+  });
+
+  // ---- T21: compute units of close, both shapes ---------------------------
+  //
+  // NOTE: same warning as T11 — these numbers are NOT constants. `beforeEach` generates random
+  // keypairs, so the canonical bump of escrow_state / vault / escrow_index changes every run, and
+  // each extra sha256 iteration of the bump search costs ~1_500 CU. Size any compute budget against
+  // a worst case with headroom, never against one sample printed here.
+  it("21. close with and without the index: report computeUnitsConsumed", async () => {
+    const deadline = nowTs + FIXTURE_TTL;
+    const pda = indexPda(sender.publicKey);
+
+    // A: registered, so the index exists and the close has an entry to remove
+    const idA = rid(147);
+    const a = await deposit(idA, DEPOSIT_AMOUNT, deadline);
+    await register(idA, a.escrowState);
+    await release(idA, a.escrowState, a.vault);
+
+    // B: never registered; its close passes escrowIndex = null
+    const idB = rid(148);
+    const b = await deposit(idB, DEPOSIT_AMOUNT, deadline);
+    await release(idB, b.escrowState, b.vault);
+
+    function closeIx(
+      id: Uint8Array,
+      escrowState: PublicKey,
+      vault: PublicKey,
+      escrowIndex: PublicKey | null
+    ) {
+      return program.methods
+        .close(Array.from(id))
+        .accountsPartial({
+          sender: sender.publicKey,
+          mint,
+          escrowState,
+          vault,
+          senderAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          escrowIndex,
+        })
+        .instruction();
+    }
+
+    const withIndex = await processIxs(
+      [await closeIx(idA, a.escrowState, a.vault, pda)],
+      [sender]
+    );
+    const withoutIndex = await processIxs(
+      [await closeIx(idB, b.escrowState, b.vault, null)],
+      [sender]
+    );
+
+    const cuWith = Number(withIndex.computeUnitsConsumed);
+    const cuWithout = Number(withoutIndex.computeUnitsConsumed);
+    console.log(`[T21] computeUnitsConsumed(close, with index)    = ${cuWith}`);
+    console.log(`[T21] computeUnitsConsumed(close, escrowIndex=null) = ${cuWithout}`);
+    console.log(`[T21] difference (same run, DIFFERENT escrows)  = ${cuWith - cuWithout}`);
+
+    // both closes really happened, and the one with the index really removed the entry
+    expect(await context.banksClient.getAccount(a.escrowState)).to.equal(null);
+    expect(await context.banksClient.getAccount(b.escrowState)).to.equal(null);
+    expect(
+      idsOf((await program.account.escrowIndex.fetch(pda)).entries)
+    ).to.deep.equal([]);
+
+    expect(cuWith).to.be.greaterThan(0);
+    expect(cuWithout).to.be.greaterThan(0);
+    expect(cuWith).to.be.lessThan(CU_REGRESSION_GUARD);
+    expect(cuWithout).to.be.lessThan(CU_REGRESSION_GUARD);
+  });
 });
