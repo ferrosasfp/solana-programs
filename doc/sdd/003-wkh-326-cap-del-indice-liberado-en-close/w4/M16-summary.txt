@@ -1,3 +1,18 @@
+# ── PASADA 1 de 2 · baseline 54 ─────────────────────────────────────────────────
+# Esta salida NO es la que describe la prosa de doc/mutation-run.md, que narra la PASADA 2.
+# Fuente: commit bdd9d92 — lib.rs md5 2e56fb6a09006c304c2132d5b42eebf6, tests/escrow-index.ts con
+# 24 tests, el 14 asertando `to.be.at.most(1)` y sin el 13c.
+# La PASADA 2 (baseline 55, sobre el arbol del fix-pack 0fdec52: el 14 con `to.equal(0)` y el 13c
+# nuevo) esta registrada en doc/mutation-run.md, con el conjunto de tests muertos de cada mutante y
+# los md5 de referencia verificados despues de cada restauracion. No se re-corrio para escribir esta
+# cabecera.
+# Check de una linea, sin abrir nada mas: passing + failing = 54 en los cinco .txt de esta carpeta.
+# Si algun archivo sumara 55, ese seria de la PASADA 2 y esta cabecera estaria mal puesta.
+# OJO, ESTE ES EL QUE MAS SE DESALINEA: aca M16 mata 3 tests y el 14 NO esta entre ellos, porque
+# con `at.most(1)` el 14 pasaba bajo M16 (la serie queda estable en 1). En la PASADA 2, con
+# `to.equal(0)`, M16 mata 4 y el 14 es uno de ellos. Ese cambio es justamente el punto F7 del
+# fix-pack: la diferencia entre los dos archivos es el mutante que el test dejaba pasar.
+# ── salida cruda de la corrida, sin editar, debajo ────────────────────────────
   51 passing (2s)
   3 failing
     1) 12. close removes exactly the entry of the escrow it closes and leaves the rest in order (AC-1)

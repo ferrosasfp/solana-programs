@@ -89,3 +89,27 @@ los repita.
 - **Aplicar en**: todo criterio de pass/fail escrito en prosa. Si el criterio es un número que el
   repo ya guarda en otro lado, referenciar ese lado. Un número duplicado es un número que se va a
   desincronizar.
+
+### [2026-08-05 19:20] Fix-pack — re-corrí los mutantes, actualicé el relato y dejé la evidencia cruda vieja sin etiquetar
+
+- **Error**: el fix-pack re-corrió los cinco mutantes contra el árbol nuevo y actualizó la tabla y la
+  prosa de `doc/mutation-run.md` con la segunda pasada. Los cinco `w4/M*-summary.txt`, que son la
+  captura cruda, quedaron de la **primera**. `M16-summary.txt` muestra 3 failing **sin el test 14**;
+  el texto dice 4 **con** el 14. Lo cazó el QA.
+- **Causa raíz**: traté "actualizar la documentación" como si fuera sólo la prosa. La evidencia cruda
+  es documentación también, y es la que consulta el que **desconfía** de la prosa — así que el
+  desalineado pega justo donde más duele. Además la primera pasada y la segunda son ambas válidas y
+  ninguna estaba mal: lo que faltaba no era re-correr nada, era decir a qué corrida pertenece cada
+  archivo.
+- **Fix**: cabecera en los cinco `w4/*.txt` con la pasada, la baseline (54), el commit del fuente
+  (`bdd9d92`, lib.rs md5 `2e56fb6a…`) y el estado de los tests de ese momento (el 14 con
+  `at.most(1)`, sin 13c); en M16 y M18 una línea extra que nombra la diferencia concreta con la
+  segunda pasada. `mutation-run.md` ahora dice explícitamente que los `w4/` son de la pasada 1 y que
+  la pasada 2 no tiene capturas crudas. Y va un discriminador que no depende de creerle a ninguna
+  cabecera: **`passing + failing` = 54 en una captura de la pasada 1 y 55 en una de la pasada 2** —
+  se verificó sobre los cinco archivos antes de escribir la cabecera, con un `assert`, no a ojo.
+- **Aplicar en**: cualquier medición que se repita. Los artefactos crudos de la corrida vieja no se
+  borran ni se pisan (perderías el "antes"), pero desde el momento en que existe una segunda corrida
+  **cada archivo tiene que decir de cuál es**, y conviene que exista un campo del propio artefacto
+  que lo delate sin leer la etiqueta. Un `_INDEX` o un nombre de carpeta con la fecha no alcanza: el
+  que abre el `.txt` suelto no lo ve.

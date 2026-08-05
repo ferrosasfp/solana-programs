@@ -45,15 +45,24 @@ three md5 were compared against that reference rather than assumed.
 
 **These five were measured twice, and the table above holds the second measurement.**
 
-1. First pass, baseline **54 passing, 0 failing** (the 43 above plus the 11 tests of the HU).
-   Reference md5 `70480969808b8fd839f3b8bfe1d8775b` / `c8e10be9a38bd96b4f0e2ebb422c0c28` /
-   `2e56fb6a09006c304c2132d5b42eebf6`, identical after all five.
+1. First pass, baseline **54 passing, 0 failing** (the 43 above plus the 11 tests of the HU), on the
+   tree of commit `bdd9d92`. Reference md5 `70480969808b8fd839f3b8bfe1d8775b` /
+   `c8e10be9a38bd96b4f0e2ebb422c0c28` / `2e56fb6a09006c304c2132d5b42eebf6`, identical after all five.
+   **The five raw captures in
+   `doc/sdd/003-wkh-326-cap-del-indice-liberado-en-close/w4/M*-summary.txt` are from THIS pass, all
+   five of them, and none was re-recorded afterwards.** Read them against this list, not against the
+   table above: two of them disagree with the table on purpose, and that disagreement is the point of
+   the fix pack. Each file now carries a header saying so; the cheap way to tell the passes apart
+   without trusting any prose is that `passing + failing` is 54 in a first-pass capture and 55 in a
+   second-pass one.
 2. Second pass, after the review fix pack, baseline **55 passing, 0 failing** (test 13c is the new
-   one). Reference md5 `d4b736cf6b9e15421e7cb1d75f3d8e0d` /
+   one), on the tree of commit `0fdec52`. Reference md5 `d4b736cf6b9e15421e7cb1d75f3d8e0d` /
    `c8e10be9a38bd96b4f0e2ebb422c0c28` / `e21a3f5e7d06ed83869d6a780c6bbe20`, identical after all
    five. The `.so` differs from the first pass because the W5 comments moved the constraint line
    numbers the binary embeds; no logic changed (see
-   `doc/sdd/003-wkh-326-cap-del-indice-liberado-en-close/idl-hash.md`).
+   `doc/sdd/003-wkh-326-cap-del-indice-liberado-en-close/idl-hash.md`). **This pass has no raw
+   captures under `w4/`**: its results are the table above and the two bullets below, and it was not
+   re-run to produce evidence files.
 
 The re-run is not ceremony: the fix pack touched two of the tests this table is about, and it moved
 two rows.
@@ -62,10 +71,12 @@ two rows.
   is stable at 1 — the close keeps the id it just closed and drops the others, so the index holds
   exactly one entry at the end of every cycle — so `<= 1` passed and the mutant walked through the
   most expensive test in the suite. Tightened to `equal(0)`, which is what the fixed program actually
-  produces, 14 dies with M16. Measured, not reasoned: 3 failing before, 4 after.
+  produces, 14 dies with M16. Measured, not reasoned: 3 failing before, 4 after. The "before" is
+  `w4/M16-summary.txt`, which is the one capture that most visibly contradicts the table — correctly
+  so, because it predates the change.
 - **M18 gained test 13c.** 13c is a `close` with `escrowIndex: null` on a sender whose index does
   exist, so it hits the same `unwrap()` on `None`. Same mechanism as the other seven, one more
-  witness.
+  witness. 7 failing before (`w4/M18-summary.txt`), 8 after.
 
 The other three rows (M15, M17, M19) came back byte for byte the same set of dead tests in both
 passes.
