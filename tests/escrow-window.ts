@@ -270,7 +270,11 @@ describe("escrow-window — the custody window and the status guard", () => {
   function close(
     remittanceId: Uint8Array,
     escrowState: PublicKey,
-    vault: PublicKey
+    vault: PublicKey,
+    // Default null = the production path: this suite's sender never calls register_escrow, so its
+    // index PDA does not exist. The key is ALWAYS present in the accounts object (CD-14): omitting
+    // it would make the client derive the PDA from the IDL seeds and send it, reverting with 3012.
+    escrowIndex: PublicKey | null = null
   ) {
     return program.methods
       .close(Array.from(remittanceId))
@@ -281,6 +285,7 @@ describe("escrow-window — the custody window and the status guard", () => {
         vault,
         senderAta,
         tokenProgram: TOKEN_PROGRAM_ID,
+        escrowIndex,
       })
       .signers([sender])
       .rpc();

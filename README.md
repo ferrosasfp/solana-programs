@@ -26,10 +26,10 @@ This is a project under implementation, not a finished product.
 | Money at risk | None. Devnet. Note that the balances custodied today are **not** on the test mint we control: the two escrows still holding funds are on Circle's devnet USDC, which is faucet money and carries a freeze authority that is not ours. Measured 2026-08-05, see [The mint](#the-mint). |
 | Upgrade authority | **Present.** The program is deployed under the upgradeable loader and its authority is a single devnet key. See [Upgrade authority](#upgrade-authority). |
 | External audit | **None.** The program has not been reviewed by a third party security firm. |
-| Test coverage | 43 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. On top of those, the custody window was exercised against the deployed program with seven real transactions, including the one that needs a genuinely expired deadline: see [The custody window, exercised against the deployed program](#the-custody-window-exercised-against-the-deployed-program). |
-| CI | **Green.** clippy, `anchor build` and the 43 tests run on every push. See [Continuous integration](#continuous-integration). |
+| Test coverage | 55 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. On top of those, the custody window was exercised against the deployed program with seven real transactions, including the one that needs a genuinely expired deadline: see [The custody window, exercised against the deployed program](#the-custody-window-exercised-against-the-deployed-program). |
+| CI | **Green.** clippy, `anchor build` and the 55 tests run on every push. See [Continuous integration](#continuous-integration). |
 | Reproducible build | **Confirmed for the binary running today.** A GitHub runner rebuilt this tree in the pinned container after the 2026-08-01 deploy and its hash matched the program on devnet. Nobody outside this project has repeated it. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
-| On-chain IDL | **Published** on 2026-08-01, in the canonical metadata account `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`. `anchor idl fetch` returns it and its canonical sha256 matches this repository and both consumers. The explorer may still not render Anchor IDLs; fetching works regardless. See [Publishing the IDL on chain](doc/publish-idl-onchain.md), including why the documented command fails and what worked instead. **Note added 2026-08-04, extended 2026-08-05:** three doc comments in `lib.rs` state things that are not true today (the deadline is rejected, not clamped; the mint paragraph cites an off-chain co-signer check that does not exist yet; and the `MAX_ENTRIES` comment says the index only lists escrows in `Deposited`, which it does not, and sizes the constant on that). All three are corrected in adjacent `//` comments rather than by editing the `///` and `//!` themselves, because Anchor copies doc comments into the IDL and editing them moves the canonical sha256 that is published on chain and pinned by both consumers. Measured both ways: editing the doc comments moves the hash and turns the facilitator's cross-repo test red; adding plain `//` comments leaves it at `fb64c937…` exactly. One nuance, measured 2026-08-05: the third one sits on a `const`, and this IDL has no `constants` section, so that particular doc comment does not reach the IDL and editing it would have been safe. It was corrected with an adjacent `//` anyway, so the file keeps one rule instead of a rule plus an exception every future reader has to re-derive. The doc comments themselves get fixed the next time the IDL is republished on chain. |
+| On-chain IDL | **Published** on 2026-08-01, in the canonical metadata account `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`. `anchor idl fetch` returns it. **Since WKH-326 it no longer describes what this tree builds:** that change adds the optional `escrow_index` account (and its doc comment) to `close`, which moves the canonical sha256, so the IDL produced by `anchor build` here is **ahead** of the one published on chain and ahead of the copy each consumer pins. Nothing was re-pinned on purpose: republishing on chain and re-pinning both consumers is one job, done once, with the hash that actually reaches the chain. Until that happens, `fb64c937…` describes the on-chain IDL and the two vendored copies, not the local build. The measured value of the local build lives in [`doc/sdd/003-wkh-326-cap-del-indice-liberado-en-close/idl-hash.md`](doc/sdd/003-wkh-326-cap-del-indice-liberado-en-close/idl-hash.md) and deliberately nowhere else, so that no consumer picks it up before the deploy. The explorer may still not render Anchor IDLs; fetching works regardless. See [Publishing the IDL on chain](doc/publish-idl-onchain.md), including why the documented command fails and what worked instead. **Note added 2026-08-04, extended 2026-08-05:** three doc comments in `lib.rs` state things that are not true today (the deadline is rejected, not clamped; the mint paragraph cites an off-chain co-signer check that does not exist yet; and the `MAX_ENTRIES` comment says the index only lists escrows in `Deposited`, which it does not, and sizes the constant on that). All three are corrected in adjacent `//` comments rather than by editing the `///` and `//!` themselves, because Anchor copies doc comments into the IDL and editing them moves the canonical sha256 that is published on chain and pinned by both consumers. Measured both ways **on `main`**: editing the doc comments moves the hash and turns the facilitator's cross-repo test red; adding plain `//` comments leaves it at `fb64c937…` exactly. The rule still holds on the WKH-326 branch (`//` comments moved no hash there either), but the number they leave it at is no longer `fb64c937…`, for the reason stated above. One nuance, measured 2026-08-05: the third one sits on a `const`, and this IDL has no `constants` section, so that particular doc comment does not reach the IDL and editing it would have been safe. It was corrected with an adjacent `//` anyway, so the file keeps one rule instead of a rule plus an exception every future reader has to re-derive. The doc comments themselves get fixed the next time the IDL is republished on chain. |
 | Known issues | Written down below, **and three of them are about custody**: a mint with a freeze authority can freeze the vault (and the mint holding every custodied unit today has one), the vault's associated token account can be pre-created by a stranger to block a deposit, and past the deadline an escrow whose sender lost their key has no exit at all. See [Known limitations](#known-limitations). |
 
 What we do claim: the custody properties below are enforced by account constraints, and each one
@@ -253,12 +253,12 @@ can be read back from the chain:
    requires the escrow to exist, to belong to the signing sender, and to still be `Deposited`. It
    moves zero tokens. Re-registering the same id neither duplicates nor reverts.
 
-   That `Deposited` requirement holds **at the instant of registration and never again**. Nothing
-   removes the entry afterwards: `release`, `refund` and `close` do not touch the index, and their
-   account lists do not even name it. So an id stays listed after its escrow reaches a terminal
-   state and after the `EscrowState` account itself has been closed. The only thing that removes an
-   entry is an explicit `deregister_escrow`, and nothing calls it automatically. An earlier version
-   of this line claimed the index "only ever lists live escrows"; it does not, and the cap is
+   That `Deposited` requirement holds **at the instant of registration and never again**. Two
+   instructions remove an entry, and only two: an explicit `deregister_escrow`, and a `close` that
+   is given the index account (it is optional there, see below). `release` and `refund` still do
+   not touch the index and their account lists do not even name it, so an id stays listed after its
+   escrow reaches a terminal state until somebody calls one of those two. An earlier version of this
+   line claimed the index "only ever lists live escrows"; it does not, and the cap is still
    dimensioned as if it did. See
    [the index fills up with finished escrows](#known-limitations).
 
@@ -270,10 +270,11 @@ Recovery path: derive `["escrow-index", sender]`, one `getAccountInfo`, read `en
 derive `["escrow", sender, entries[i]]` and call the normal `refund`. The authority is not a
 party to either instruction and gains no power over the funds.
 
-Because entries are not removed when an escrow ends, whoever walks that list has to expect ids
-whose `EscrowState` is already terminal or already closed: a `getAccountInfo` on the derived
-address can come back `null`, and a `refund` on a terminal one reverts with `EscrowNotDeposited`
-(6002). Both are normal results of reading this index, not signs of a corrupted one.
+Entries are not removed when an escrow ends, only when somebody calls `deregister_escrow` or a
+`close` carrying the index, so whoever walks that list still has to expect ids whose `EscrowState`
+is already terminal or already closed: a `getAccountInfo` on the derived address can come back
+`null`, and a `refund` on a terminal one reverts with `EscrowNotDeposited` (6002). Both are normal
+results of reading this index, not signs of a corrupted one.
 
 ## Instructions
 
@@ -282,7 +283,7 @@ address can come back `null`, and a `refund` on a terminal one reverts with `Esc
 | `deposit` | sender | creates state + vault, pulls `amount` in | `amount > 0`; `now + 1 h <= deadline <= now + 24 h` |
 | `release` | recorded authority | pays the recorded beneficiary | `has_one` on authority, beneficiary, sender, mint; status `Deposited`; **`now < deadline`** |
 | `refund` | sender | pays the sender back | `has_one` on sender and mint; status `Deposited`; `now >= deadline` |
-| `close` | sender | transfers the whole vault balance to the sender, closes state + vault, rent to sender | status in `{Released, Refunded}` |
+| `close` | sender | transfers the whole vault balance to the sender, closes state + vault, rent to sender; removes the id from the sender's index when the optional `escrow_index` account is passed | status in `{Released, Refunded}`; the optional index PDA is seeded by the signer |
 | `register_escrow` | sender | adds an id to the sender's index | escrow belongs to signer and is `Deposited`; index not full |
 | `deregister_escrow` | sender | removes an id from the sender's index | index PDA is seeded by the signer |
 
@@ -451,12 +452,13 @@ Covered by `escrow.ts` test 7 and by `escrow-window.ts` D2, which leaves the vau
 asserts that not one token moved.
 
 **9. The index is writable only by its owner.**
-In both instructions the index PDA is seeded `["escrow-index", sender.key()]` with `sender` as the
-signer, so the seeds themselves are the ownership guard: you cannot name someone else's index
-without their signature. `register_escrow` additionally carries `has_one = sender` on the escrow
-account as defence in depth. Covered by
-`escrow-index.ts` tests 4b and 4c, where an attacker fails both to register into a victim's index
-and to deregister from it.
+Three instructions write it now: `register_escrow`, `deregister_escrow` and `close`. In all three
+the index PDA is seeded `["escrow-index", sender.key()]` with `sender` as the signer, so the seeds
+themselves are the ownership guard: you cannot name someone else's index without their signature.
+`register_escrow` additionally carries `has_one = sender` on the escrow account as defence in
+depth. Covered by `escrow-index.ts` tests 4b and 4c, where an attacker fails both to register into
+a victim's index and to deregister from it, and by test 15, where the attacker closes an escrow of
+its **own** and passing the victim's index still reverts with `ConstraintSeeds`.
 
 **10. The index gives the authority no power and moves no tokens.**
 Neither recovery instruction takes an `authority` account and neither performs an SPL transfer.
@@ -466,9 +468,14 @@ account. `escrow-index.ts` test 7 asserts no token balance changes. The count is
 instruction nobody reviewed shows up as a red diff.
 
 **11. The index is bounded and idempotent.**
-32 entries maximum (`MAX_ENTRIES`); the 33rd reverts with
+32 entries maximum (`MAX_ENTRIES`); the 33rd **simultaneous** entry reverts with
 `EscrowIndexFull`; re-registering an id neither duplicates it nor reverts. Covered by
-`escrow-index.ts` tests 5 and 6. `EscrowIndex` is the only account created with `init_if_needed`, which is safe here
+`escrow-index.ts` tests 5 and 6. The bound is no longer monotonic over the sender's lifetime:
+`escrow-index.ts` test 14 runs 33 full `deposit → register_escrow → release → close` cycles with
+the same sender, passing the index to each `close`, and the 33rd `register_escrow` confirms. It
+reverted with `EscrowIndexFull` before WKH-326. That only holds for senders who do call `close`
+with the index; see [known limitations](#known-limitations) for what still fills up.
+`EscrowIndex` is the only account created with `init_if_needed`, which is safe here
 because it custodies no funds, its seeds bind it to the signing sender, and every header write in
 the handler is idempotent, so nothing ever resets `entries`.
 
@@ -604,23 +611,31 @@ when), so this escrow is not stranded. It is what the stranded state looks like 
 and the only difference between the two is off chain: whether somebody still holds that key.
 `list-live-escrows.py` flags it.
 
-**The index fills up with finished escrows, and only a manual call empties it.**
+**The index still fills up for a sender who does not call `close` with it.**
 `register_escrow` requires the escrow to be `Deposited`, but it checks that once, when the id is
-registered. Nothing removes the entry later: `release`, `refund` and `close` do not touch the
-`EscrowIndex` and do not even list the account, so an id stays in the index after its escrow is
-terminal and after its `EscrowState` has been closed. The only way out is calling
-`deregister_escrow` for that id, and no instruction and no client does it automatically today:
-grepping both consumers for `deregisterEscrow` returns only their vendored copies of the IDL. The
-cap is `MAX_ENTRIES = 32`, so a sender with 32 registered and never deregistered ids, successful or
-not, gets `EscrowIndexFull` (6005) on the 33rd `register_escrow`. That matters more than it sounds:
-the heaviest supported transaction shape, the one the off-chain co-signer accepts and the one this
+registered. Since WKH-326 `close` declares an **optional** `escrow_index` account and, when it is
+passed, removes the id it is closing; `release` and `refund` still do not touch the index and do not
+even list the account. So the cap is no longer a lifetime counter: `escrow-index.ts` test 14 runs 33
+`deposit → register_escrow → release → close` cycles with one sender and the 33rd register confirms,
+where before it died with `EscrowIndexFull` (6005).
+
+Three ways it still fills up, each refutable with a concrete call:
+
+1. **Nobody calls `close`.** It is opt-in and no consumer builds it today: grepping both consumers
+   for a `close` builder returns only their vendored copies of the IDL (re-run 2026-08-05). 32
+   registered escrows that are never closed still give 6005 on the 33rd `register_escrow`.
+2. **`close` is called with `escrowIndex: null`.** That is legal and is the right call for a sender
+   who never registered anything, but for one who did, the entry stays.
+3. **Entries whose `EscrowState` was already closed** before this change cannot be cleaned by
+   `close` any more, since the account it closes is gone. `deregister_escrow` remains their only
+   exit, and nothing issues that call automatically either.
+
+The cap is still `MAX_ENTRIES = 32`. When it does trigger it matters more than it sounds: the
+heaviest supported transaction shape, the one the off-chain co-signer accepts and the one this
 README measures at 57,326 compute units, is `deposit` plus `register_escrow` in **one atomic
-transaction**, so in that shape the error takes the deposit down with it and the sender cannot open
-a new escrow that way until somebody cleans up. A `deposit` sent on its own still lands, because
-`deposit` never touches the index. No funds are at risk at any point, the index holds 16 byte ids
-and never holds tokens, and one `deregister_escrow` per finished id frees the slot. What does not
-exist is anything that issues those calls. There is more than one reasonable fix and none has been
-chosen; this entry exists so that the choice is made rather than defaulted into.
+transaction**, so in that shape the error takes the deposit down with it. A `deposit` sent on its
+own still lands, because `deposit` never touches the index. No funds are at risk at any point: the
+index holds 16 byte ids and never holds tokens.
 
 **`EscrowIndex` rent is not recoverable.**
 There is no instruction that closes the index account. Once a sender creates one, its rent stays
@@ -743,12 +758,12 @@ Tests run on [`anchor-bankrun`](https://github.com/kevinheavey/anchor-bankrun), 
 no local validator, which is what makes deterministic control of the clock possible for the
 deadline cases.
 
-Last measured run: **43 passing**, in about 3 seconds.
+Last measured run: **55 passing**, in about 4 seconds.
 
 | Suite | Tests | What it covers |
 |-------|-------|----------------|
 | `tests/escrow.ts` | 10 | deposit, release, refund, close, the state machine, the 154 byte canary |
-| `tests/escrow-index.ts` | 13 | the index, attacker paths, legacy account compatibility, IDL shape, the entry cap, rent and compute cost |
+| `tests/escrow-index.ts` | 25 | the index, attacker paths, legacy account compatibility, IDL shape, the entry cap, rent and compute cost, and `close` removing its own entry |
 | `tests/escrow-window.ts` | 20 | the custody window floor and ceiling, both edges of the release/refund invariant, the status guard attacked with a refilled vault, the vault sweep, the status byte of accounts already live |
 
 `escrow-window.ts` re-declares the two constants as its own literals instead of importing them
@@ -986,10 +1001,13 @@ artifact changes with every build.
 
 ### The account list of `close` has no safe deployment order
 
-The vault sweep added a `sender_ata` account to `close`. There is **no ordering of the program and
-client deploys that avoids a break**: a new client against the old program sends an account the old
-program does not expect, and an old client against the new program omits an account the new program
-requires. Both directions fail.
+The vault sweep added a `sender_ata` account to `close`, and WKH-326 added a **second** one,
+`escrow_index`, last in the list. There is **no ordering of the program and client deploys that
+avoids a break**: a new client against the old program sends accounts the old program does not
+expect, and an old client against the new program omits `sender_ata`, which the new program
+requires. Both directions fail. The second account is milder than the first only in that it is
+optional in the program: a client that always sends `escrowIndex: null` matches the new program's
+list. It still does not match the old program's list, which has six accounts and not seven.
 
 What makes it tolerable today, and it is a fact worth checking rather than a promise: **no consumer
 builds `close` at all right now.** It is a forward constraint on whoever writes the first one, not a
@@ -1000,6 +1018,13 @@ Checked again on 2026-08-01, before the deploy, by grepping both consumers. `cha
 `close` in its vendored IDL and never invokes it; `wasiai-facilitator` signs `release` and reads
 `EscrowState`, and does not touch `close` either. So the deploy went ahead in the only order that
 was safe for everything else: consumers first, program second.
+
+Re-grepped on 2026-08-05 over the four consumer repos for anything that builds this instruction:
+still zero. The only hit outside vendored IDLs is
+`chaski-v3/src/infrastructure/settlement/solana-deposit-beneficiary.test.ts:123`, which reads
+`close`'s **discriminator** from the vendored IDL to build a transaction that is deliberately not a
+deposit. Anchor derives that discriminator from the instruction **name**, not from its account list,
+so adding an account does not move it and that test is unaffected.
 
 ### What the consumers needed before this could be deployed
 

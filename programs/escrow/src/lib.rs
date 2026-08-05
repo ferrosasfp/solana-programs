@@ -332,6 +332,15 @@ pub mod escrow {
         );
         anchor_spl::token::close_account(cpi_ctx)?;
         // escrow_state se cierra automáticamente por el constraint `close = sender` del Context.
+
+        // El índice es OPCIONAL: si el caller mandó `null` no hay nada que limpiar (ese es el caso
+        // de un sender que nunca llamó `register_escrow`). Va al final del cuerpo sólo para dejar
+        // el bloque de CPIs de arriba sin tocar: los constraints del Context — incluido
+        // `is_terminal()` — corren antes que todo esto, así que un `close` rechazado no llega acá.
+        // Misma expresión que `deregister_escrow`, a propósito duplicada y no factorizada.
+        if let Some(index) = ctx.accounts.escrow_index.as_mut() {
+            index.entries.retain(|e| *e != remittance_id);
+        }
         Ok(())
     }
 
@@ -378,22 +387,27 @@ pub mod escrow {
 // sha256 canónico publicado en cadena; mismo patrón que el bloque del Context `Deposit`, y la
 // fila "On-chain IDL" del README):
 // el doc comment de abajo dice que "el índice solo lista escrows en estado Deposited" y DIMENSIONA
-// MAX_ENTRIES sobre esa premisa. La premisa es falsa. `register_escrow` exige Deposited UNA SOLA
-// VEZ, en el instante del registro (constraint de RegisterEscrow, más abajo en este archivo).
-// Después nadie saca la entrada: ni `release`, ni `refund`, ni `close` tocan el EscrowIndex — se
-// puede comprobar leyendo sus tres Contexts, ninguno declara la cuenta `escrow_index`. La entrada
-// sobrevive al estado terminal Y al cierre de la cuenta EscrowState. Lo único que la borra es un
-// `deregister_escrow` explícito, y hoy nada lo llama solo. El comentario de `deregister_escrow`
-// (más arriba) ya dice esto mismo: este archivo se contradecía consigo mismo.
-// CONSECUENCIA MEDIBLE de que sea falsa: el cap NO son 32 escrows abiertos a la vez, son 32 ids
-// registrados y nunca desregistrados, exitosos o no. Un sender con 32 remesas ya terminadas y sin
-// limpiar recibe EscrowIndexFull (6005) en el `register_escrow` 33º; y como la forma más pesada
-// soportada (la que acepta el co-firmante off-chain) es `deposit` + `register_escrow` en UNA
-// transacción atómica, ahí ese error se lleva puesto al depósito. Un `deposit` suelto igual entra:
-// `deposit` no toca el índice. No hay fondos en riesgo (el índice no custodia tokens y un
-// `deregister_escrow` por id terminado libera lugar), pero no existe nada que emita esas llamadas
-// hoy: ningún consumidor construye `deregister_escrow`. Cómo arreglarlo es una
-// decisión de diseño que NO está tomada. Ver "Known limitations" en el README.
+// MAX_ENTRIES sobre esa premisa. La premisa sigue siendo falsa: `register_escrow` exige Deposited
+// UNA SOLA VEZ, en el instante del registro (constraint de RegisterEscrow, más abajo en este
+// archivo), y después el estado del escrow puede cambiar sin que la entrada se entere.
+//
+// QUÉ CAMBIÓ (WKH-326): `close` ahora declara la cuenta `escrow_index` como OPCIONAL y, cuando se
+// la pasan, saca del índice el id del escrow que está cerrando (ver el `if let Some` al final del
+// handler `close`). `release` y `refund` siguen sin tocar el índice — se puede comprobar leyendo
+// sus dos Contexts, ninguno declara la cuenta.
+// CONSECUENCIA MEDIBLE: el cap dejó de ser monótono. Un sender que hace
+// `deposit → register_escrow → release → close` pasándole el índice al `close` puede repetir el
+// ciclo indefinidamente; el `register_escrow` número 33 entra (test 14 de tests/escrow-index.ts
+// corre exactamente 33 ciclos y antes de este cambio moría con EscrowIndexFull / 6005).
+//
+// QUÉ SIGUE EN PIE, y es refutable con un input concreto:
+// 1. Si el sender nunca llama `close`, el cupo no se libera: `close` es opt-in y hoy ningún
+//    consumidor la construye. 32 escrows registrados y jamás cerrados siguen dando 6005 en el 33º.
+// 2. Si el sender llama `close` SIN pasar el índice (`escrowIndex: null`), la entrada queda
+//    colgada igual que antes. Omitir la cuenta no es un error: es el camino de quien nunca
+//    registró nada.
+// 3. Para las entradas cuyo `EscrowState` ya se cerró antes de este cambio, `close` no sirve
+//    (ya no existe la cuenta que cierra), y `deregister_escrow` sigue siendo la única salida.
 /// Máximo de escrows ABIERTOS indexables por sender. El índice solo lista escrows en estado
 /// Deposited (ver RegisterEscrow), y el ciclo de vida de un escrow es de minutos/horas ⇒ 32 es
 /// ~16-32x el uso real esperado. Subirlo a futuro es OTRA HU (CD-11).
@@ -408,8 +422,10 @@ pub struct EscrowIndex {
     pub version: u8,            //  1 — forward-compat del layout del índice
     pub bump: u8,               //  1 — bump canónico del PDA
     #[max_len(MAX_ENTRIES)]
-    // id16 de los escrows REGISTRADOS del sender: estaban Deposited cuando se registraron y ahí
-    // se quedan, terminales o no, hasta un `deregister_escrow` explícito (ver MAX_ENTRIES).
+    // id16 de los escrows REGISTRADOS del sender: estaban Deposited cuando se registraron. Salen
+    // por dos caminos y sólo por esos dos: un `deregister_escrow` explícito, o un `close` al que
+    // se le pasa esta cuenta. Un `close` con `escrowIndex: null`, o un escrow que nadie cierra,
+    // dejan la entrada acá indefinidamente (ver el bloque de MAX_ENTRIES).
     pub entries: Vec<[u8; 16]>, //  4 + 16·32 = 516
 }
 
@@ -684,6 +700,30 @@ pub struct Close<'info> {
     pub sender_ata: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
+
+    /// Índice del sender, cuenta OPCIONAL. Si se la pasa, `close` saca de `entries` el
+    /// `remittance_id` que está cerrando; si se la omite, `close` no la lee ni la crea (un sender
+    /// que nunca llamó `register_escrow` no tiene esta PDA y su `close` tiene que funcionar igual).
+    ///
+    /// Omitirla se escribe `escrowIndex: null` EXPLÍCITO. Dejar la clave afuera del objeto de
+    /// cuentas NO la omite: el cliente deriva la PDA `["escrow-index", sender]` a partir de las
+    /// seeds que declara este IDL y la manda igual, y si esa cuenta no existe la tx revierte con
+    /// `AccountNotInitialized` (3012), un error que no nombra la palabra "opcional" y manda a
+    /// buscar donde no es.
+    ///
+    /// Omitirla cuando el índice SÍ existe y SÍ contiene el id no revierte: deja la entrada
+    /// colgada, ocupando uno de los 32 lugares hasta que alguien llame `deregister_escrow` con ese
+    /// id. O sea que la omisión reintroduce, para ese id, el cap monótono que esta cuenta existe
+    /// para evitar.
+    ///
+    /// Regla para el cliente: un `getAccountInfo` sobre `["escrow-index", sender]` antes de armar
+    /// la tx. Si devuelve una cuenta, pasarla; si devuelve null, `null` explícito.
+    #[account(
+        mut,
+        seeds = [b"escrow-index", sender.key().as_ref()],
+        bump = escrow_index.bump
+    )]
+    pub escrow_index: Option<Account<'info, EscrowIndex>>,
 }
 
 #[derive(Accounts)]

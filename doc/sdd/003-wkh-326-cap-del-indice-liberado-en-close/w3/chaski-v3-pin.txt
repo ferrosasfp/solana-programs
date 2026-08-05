@@ -1,0 +1,30 @@
+
+ RUN  v2.1.9 /home/ferdev/.openclaw/workspace/chaski-v3
+
+ ❯ contracts/idl/escrow-idl.hash.test.ts (6 tests | 1 failed) 8ms
+   × escrow IDL — hash canónico (WKH-227 / AC-2, AC-3) > AC-3: coincide con solana-programs (sibling) 5ms
+     → expected 'bfbdfe5aedd55d68e6dda4663b5d26daada81…' to be 'fb64c937dbdab7a58045e663a85724808c453…' // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  contracts/idl/escrow-idl.hash.test.ts > escrow IDL — hash canónico (WKH-227 / AC-2, AC-3) > AC-3: coincide con solana-programs (sibling)
+AssertionError: expected 'bfbdfe5aedd55d68e6dda4663b5d26daada81…' to be 'fb64c937dbdab7a58045e663a85724808c453…' // Object.is equality
+
+Expected: "fb64c937dbdab7a58045e663a85724808c4539707fedbdf244e11a28dbe5c071"
+Received: "bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922"
+
+ ❯ contracts/idl/escrow-idl.hash.test.ts:34:38
+     32|   (existsSync(SIBLING) ? it : it.skip)("AC-3: coincide con solana-prog…
+     33|     const sibling: unknown = JSON.parse(readFileSync(SIBLING, "utf8"))…
+     34|     expect(canonicalSha256(sibling)).toBe(ESCROW_IDL_SHA256);
+       |                                      ^
+     35|   });
+     36| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 5 passed (6)
+   Start at  13:59:23
+   Duration  318ms (transform 63ms, setup 0ms, collect 59ms, tests 8ms, environment 0ms, prepare 39ms)
+
