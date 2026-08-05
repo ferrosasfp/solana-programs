@@ -587,16 +587,16 @@ anybody: not the beneficiary, not the recorded authority, not us. The funds sit 
 This is **a consequence of the custody window and it is the intended trade**, not a defect: before
 the window, the authority could push the payment forward indefinitely, which meant a rescue existed
 and also meant the sender's exposure had no end. Bounding the exposure is what closes the rescue,
-and for a non custodial escrow that is the right side to land on — the alternative is an operator
-who can move a sender's money at an arbitrary future date. It is written here because the trade has
-a cost and the cost lands on whoever holds the sender key. One caveat that cuts the other way,
-stated so nobody reads more finality into this than there is: the program is upgradeable today, so
+and for a non custodial escrow that is the right side to land on, since the alternative is an
+operator who can move a sender's money at an arbitrary future date. It is written here because the
+trade has a cost and the cost lands on whoever holds the sender key. One caveat that cuts the other
+way, stated so nobody reads more finality into this than there is: the program is upgradeable, so
 its upgrade authority could deploy a version that adds an exit. That is not a property of this
 design, it is the operational risk in [Upgrade authority](#upgrade-authority); on a deployment where
 that authority has been removed, the dead end is absolute.
 
-There is one escrow in the first half of that state on devnet right now, which is the cheapest way
-to see it: `4VopXGzBLyy1LtCm8ms881Vpo45ByApjFoUiZATquLiE`, still `Deposited`, deadline passed on
+One escrow on devnet is in the on-chain half of that state right now, which is the cheapest way to
+see it: `4VopXGzBLyy1LtCm8ms881Vpo45ByApjFoUiZATquLiE`, still `Deposited`, deadline passed on
 2026-08-04, 10 units of Circle's devnet USDC. Its release is already impossible and its only exit is
 a `refund` signed by `4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P`. That key is demonstrably in
 use, since it signed the other live deposit within the last day (the 24 hour ceiling puts a bound on
@@ -709,9 +709,9 @@ mint's freeze authority as the only path to permanent entrapment we know of. Our
 take that path, it has no freeze authority to use. Circle's devnet mint has one and it is not ours,
 so that limitation applies to **100% of the balance custodied right now**, rather than to a
 hypothetical mint someone might use later. What that costs today is nothing: this is devnet, the
-15 units are faucet balances, and neither vault is frozen —
+15 units are faucet balances, and neither vault is frozen. The two vaults are
 `CrtFReeHXq24QrNJGpt2szkTWsBx5YcgJTWnWYvCLSxZ` and
-`7wor99nsGcXw8eTsn6F4QdqPX2SjMLdQHwS21XnrUrTT` both report `state: initialized`, read on the same
+`7wor99nsGcXw8eTsn6F4QdqPX2SjMLdQHwS21XnrUrTT`, and both report `state: initialized`, read the same
 day. The exposure is real in kind and zero in value, and the sentence that told a reader not to
 look here was the actual defect.
 
