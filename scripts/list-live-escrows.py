@@ -10,6 +10,10 @@ the only remaining exit is the refund, which only the sender can sign. The money
 is not lost, but the exit changes hands with no way back, and that should be a
 decision somebody took rather than a side effect somebody discovered.
 
+"Not lost" holds only while the sender can still sign: the refund is the last
+exit there is, so if that key is gone the escrow is unreachable by everyone,
+permanently. See "Known limitations" in the README.
+
 So: run this BEFORE the upgrade, drain what it flags, and run it again.
 
 Read only. It signs nothing, sends no transaction, needs no keypair and takes no
@@ -201,7 +205,8 @@ def main() -> int:
     print("")
     print("Each of these can be released by its authority RIGHT NOW and cannot be")
     print("released at all once this version is live: only the sender's refund remains.")
-    print("The funds are never lost. What changes, irreversibly, is who holds the exit.")
+    print("The funds are never lost while the sender can still sign: the refund is the")
+    print("last exit there is. What changes, irreversibly, is who holds it.")
     print("Drain them first, or decide deliberately that the refund is the right outcome.")
     print("The vault is the associated token account of the escrow address above.")
     return 1 if args.exit_nonzero_if_blocking else 0

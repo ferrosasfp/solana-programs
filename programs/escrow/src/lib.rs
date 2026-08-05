@@ -374,6 +374,26 @@ pub mod escrow {
 // Índice enumerable por sender (HU-SOL-20)
 // ---------------------------------------------------------------------------
 
+// ⚠️ CORRECCION 2026-08-05, y va en `//` a proposito (los `///` viajan al IDL y le mueven el
+// sha256 canónico publicado en cadena; mismo patrón que el bloque del Context `Deposit`, y la
+// fila "On-chain IDL" del README):
+// el doc comment de abajo dice que "el índice solo lista escrows en estado Deposited" y DIMENSIONA
+// MAX_ENTRIES sobre esa premisa. La premisa es falsa. `register_escrow` exige Deposited UNA SOLA
+// VEZ, en el instante del registro (constraint de RegisterEscrow, más abajo en este archivo).
+// Después nadie saca la entrada: ni `release`, ni `refund`, ni `close` tocan el EscrowIndex — se
+// puede comprobar leyendo sus tres Contexts, ninguno declara la cuenta `escrow_index`. La entrada
+// sobrevive al estado terminal Y al cierre de la cuenta EscrowState. Lo único que la borra es un
+// `deregister_escrow` explícito, y hoy nada lo llama solo. El comentario de `deregister_escrow`
+// (más arriba) ya dice esto mismo: este archivo se contradecía consigo mismo.
+// CONSECUENCIA MEDIBLE de que sea falsa: el cap NO son 32 escrows abiertos a la vez, son 32 ids
+// registrados y nunca desregistrados, exitosos o no. Un sender con 32 remesas ya terminadas y sin
+// limpiar recibe EscrowIndexFull (6005) en el `register_escrow` 33º; y como la forma más pesada
+// soportada (la que acepta el co-firmante off-chain) es `deposit` + `register_escrow` en UNA
+// transacción atómica, ahí ese error se lleva puesto al depósito. Un `deposit` suelto igual entra:
+// `deposit` no toca el índice. No hay fondos en riesgo (el índice no custodia tokens y un
+// `deregister_escrow` por id terminado libera lugar), pero no existe nada que emita esas llamadas
+// hoy: ningún consumidor construye `deregister_escrow`. Cómo arreglarlo es una
+// decisión de diseño que NO está tomada. Ver "Known limitations" en el README.
 /// Máximo de escrows ABIERTOS indexables por sender. El índice solo lista escrows en estado
 /// Deposited (ver RegisterEscrow), y el ciclo de vida de un escrow es de minutos/horas ⇒ 32 es
 /// ~16-32x el uso real esperado. Subirlo a futuro es OTRA HU (CD-11).
@@ -388,7 +408,9 @@ pub struct EscrowIndex {
     pub version: u8,            //  1 — forward-compat del layout del índice
     pub bump: u8,               //  1 — bump canónico del PDA
     #[max_len(MAX_ENTRIES)]
-    pub entries: Vec<[u8; 16]>, //  4 + 16·32 = 516 — id16 de los escrows ABIERTOS del sender
+    // id16 de los escrows REGISTRADOS del sender: estaban Deposited cuando se registraron y ahí
+    // se quedan, terminales o no, hasta un `deregister_escrow` explícito (ver MAX_ENTRIES).
+    pub entries: Vec<[u8; 16]>, //  4 + 16·32 = 516
 }
 
 // ---------------------------------------------------------------------------

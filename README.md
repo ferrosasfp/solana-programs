@@ -23,14 +23,14 @@ This is a project under implementation, not a finished product.
 |---|---|
 | Deployed | Solana **devnet** only. No mainnet deployment exists. |
 | Source vs deployed | **They agree.** The custody window (the release deadline, the deposit floor and ceiling, the vault sweep on `close`) was deployed to devnet on 2026-08-01, in slot `480496830`. The hashes in [Deployment](#deployment) describe a build of this tree. Before the deploy the one live escrow that would have lost its release exit was drained, and the ProgramData account was extended because the binary no longer fitted: both steps are written up in [Before upgrading the deployed program](#before-upgrading-the-deployed-program). |
-| Money at risk | None. Devnet, with a test mint we control. |
+| Money at risk | None. Devnet. Note that the balances custodied today are **not** on the test mint we control: the two escrows still holding funds are on Circle's devnet USDC, which is faucet money and carries a freeze authority that is not ours. Measured 2026-08-05, see [The mint](#the-mint). |
 | Upgrade authority | **Present.** The program is deployed under the upgradeable loader and its authority is a single devnet key. See [Upgrade authority](#upgrade-authority). |
 | External audit | **None.** The program has not been reviewed by a third party security firm. |
 | Test coverage | 43 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. On top of those, the custody window was exercised against the deployed program with seven real transactions, including the one that needs a genuinely expired deadline: see [The custody window, exercised against the deployed program](#the-custody-window-exercised-against-the-deployed-program). |
 | CI | **Green.** clippy, `anchor build` and the 43 tests run on every push. See [Continuous integration](#continuous-integration). |
 | Reproducible build | **Confirmed for the binary running today.** A GitHub runner rebuilt this tree in the pinned container after the 2026-08-01 deploy and its hash matched the program on devnet. Nobody outside this project has repeated it. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
-| On-chain IDL | **Published** on 2026-08-01, in the canonical metadata account `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`. `anchor idl fetch` returns it and its canonical sha256 matches this repository and both consumers. The explorer may still not render Anchor IDLs; fetching works regardless. See [Publishing the IDL on chain](doc/publish-idl-onchain.md), including why the documented command fails and what worked instead. **Note added 2026-08-04:** two doc comments in `lib.rs` state things that are not true today (the deadline is rejected, not clamped; and the mint paragraph cites an off-chain co-signer check that does not exist yet). Both are corrected in adjacent `//` comments rather than by editing the `///` and `//!` themselves, because Anchor copies doc comments into the IDL and editing them moves the canonical sha256 that is published on chain and pinned by both consumers. Measured both ways: editing the doc comments moves the hash and turns the facilitator's cross-repo test red; adding plain `//` comments leaves it at `fb64c937…` exactly. The doc comments themselves get fixed the next time the IDL is republished on chain. |
-| Known issues | Written down below, **and two of them are about custody**: a mint with a freeze authority can freeze the vault, and the vault's associated token account can be pre-created by a stranger to block a deposit. See [Known limitations](#known-limitations). |
+| On-chain IDL | **Published** on 2026-08-01, in the canonical metadata account `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`. `anchor idl fetch` returns it and its canonical sha256 matches this repository and both consumers. The explorer may still not render Anchor IDLs; fetching works regardless. See [Publishing the IDL on chain](doc/publish-idl-onchain.md), including why the documented command fails and what worked instead. **Note added 2026-08-04, extended 2026-08-05:** three doc comments in `lib.rs` state things that are not true today (the deadline is rejected, not clamped; the mint paragraph cites an off-chain co-signer check that does not exist yet; and the `MAX_ENTRIES` comment says the index only lists escrows in `Deposited`, which it does not, and sizes the constant on that). All three are corrected in adjacent `//` comments rather than by editing the `///` and `//!` themselves, because Anchor copies doc comments into the IDL and editing them moves the canonical sha256 that is published on chain and pinned by both consumers. Measured both ways: editing the doc comments moves the hash and turns the facilitator's cross-repo test red; adding plain `//` comments leaves it at `fb64c937…` exactly. One nuance, measured 2026-08-05: the third one sits on a `const`, and this IDL has no `constants` section, so that particular doc comment does not reach the IDL and editing it would have been safe. It was corrected with an adjacent `//` anyway, so the file keeps one rule instead of a rule plus an exception every future reader has to re-derive. The doc comments themselves get fixed the next time the IDL is republished on chain. |
+| Known issues | Written down below, **and three of them are about custody**: a mint with a freeze authority can freeze the vault (and the mint holding every custodied unit today has one), the vault's associated token account can be pre-created by a stranger to block a deposit, and past the deadline an escrow whose sender lost their key has no exit at all. See [Known limitations](#known-limitations). |
 
 What we do claim: the custody properties below are enforced by account constraints, and each one
 has a test that tries to break it. What we do not claim: that an audit would find nothing.
@@ -133,7 +133,11 @@ E and G are there because A through D and F only prove the program **refuses** t
 refused everything would pass all five. E and G prove it also pays out, to the right party, in both
 directions of the window.
 
-Nothing was left stranded: `list-live-escrows.py --exit-nonzero-if-blocking` exits 0 afterwards.
+Nothing was left stranded by that upgrade: `list-live-escrows.py --exit-nonzero-if-blocking` exited
+0 right after it. Run today it exits 1 again, and that is not a regression of the upgrade: a deposit
+made afterwards has since passed its own deadline, so its only remaining exit is the sender's
+refund. Which is the ordinary end state of this design and is written up in
+[Known limitations](#known-limitations).
 
 ## Reproducing the deployed binary
 
@@ -246,9 +250,17 @@ can be read back from the chain:
 
 4. **`register_escrow(remittance_id)`** records the id in an `EscrowIndex` account derived from
    `["escrow-index", sender]`, that is, derivable knowing only the sender's own address. It
-   requires the escrow to exist, to belong to the signing sender, and to still be `Deposited`, so
-   the index only ever lists live escrows. It moves zero tokens. Re-registering the same id neither
-   duplicates nor reverts.
+   requires the escrow to exist, to belong to the signing sender, and to still be `Deposited`. It
+   moves zero tokens. Re-registering the same id neither duplicates nor reverts.
+
+   That `Deposited` requirement holds **at the instant of registration and never again**. Nothing
+   removes the entry afterwards: `release`, `refund` and `close` do not touch the index, and their
+   account lists do not even name it. So an id stays listed after its escrow reaches a terminal
+   state and after the `EscrowState` account itself has been closed. The only thing that removes an
+   entry is an explicit `deregister_escrow`, and nothing calls it automatically. An earlier version
+   of this line claimed the index "only ever lists live escrows"; it does not, and the cap is
+   dimensioned as if it did. See
+   [the index fills up with finished escrows](#known-limitations).
 
 5. **`deregister_escrow(remittance_id)`** removes one id from the caller's own index. It is a
    no op if the id is absent, it moves no tokens, and it deliberately does not require a terminal
@@ -257,6 +269,11 @@ can be read back from the chain:
 Recovery path: derive `["escrow-index", sender]`, one `getAccountInfo`, read `entries`, then
 derive `["escrow", sender, entries[i]]` and call the normal `refund`. The authority is not a
 party to either instruction and gains no power over the funds.
+
+Because entries are not removed when an escrow ends, whoever walks that list has to expect ids
+whose `EscrowState` is already terminal or already closed: a `getAccountInfo` on the derived
+address can come back `null`, and a `refund` on a terminal one reverts with `EscrowNotDeposited`
+(6002). Both are normal results of reading this index, not signs of a corrupted one.
 
 ## Instructions
 
@@ -285,7 +302,7 @@ Errors:
 | 6002 | `EscrowNotDeposited` | escrow is not open |
 | 6003 | `DeadlineNotReached` | refund attempted too early |
 | 6004 | `EscrowNotTerminal` | close attempted from a non terminal state |
-| 6005 | `EscrowIndexFull` | 33rd open escrow for one sender |
+| 6005 | `EscrowIndexFull` | 33rd `register_escrow` for one sender, counting every id never deregistered, terminal or not |
 | 6006 | `DeadlineTooSoon` | deadline below the one hour floor |
 | 6007 | `DeadlineTooFar` | deadline above the twenty four hour ceiling |
 | 6008 | `ReleaseWindowClosed` | release attempted at or after the deadline |
@@ -503,6 +520,14 @@ entrapment we know of, and it comes from outside the program: the program cannot
 it or route around it. It sits next to the decision not to pin the mint (see [The mint](#the-mint)):
 choosing the mint is choosing whose freeze authority you are exposed to.
 
+This one is no longer hypothetical, and the number is small enough to state plainly. As of
+2026-08-05 the only two escrows still holding funds on devnet are denominated in Circle's devnet
+USDC, whose freeze authority is `CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT` and is not ours, so
+this limitation covers 100% of the custodied balance. That balance is 15 units of devnet money from
+a faucet, neither vault is frozen (`state: initialized`, read the same day) and the economic
+exposure is zero. What changed is the kind of exposure, not its size. The measurement and the
+commands to repeat it are in [The mint](#the-mint).
+
 **The vault's associated token account can be pre-created by a stranger, blocking the deposit.**
 `deposit` creates the vault with `init`, not `init_if_needed`. The address is an associated token
 account of a PDA derived from `["escrow", sender, remittance_id]`, so anyone who can guess or
@@ -553,6 +578,50 @@ decided before this program is deployed and the client is pointed at it.
 It caps how long a sender is exposed. It says nothing about how much. A cap on the amount that can
 be committed automatically is a separate control and it does not exist yet.
 
+**Past the deadline, an escrow whose sender lost their key has no exit at all.**
+From the deadline on, `release` reverts with `ReleaseWindowClosed` and there is no instruction that
+reopens it. The only instruction left that can move the vault is `refund`, and `refund` requires the
+sender's signature; `close` requires it too, and only runs from a terminal state. So an escrow that
+is still `Deposited` past its deadline and whose sender key is lost or unusable cannot be moved by
+anybody: not the beneficiary, not the recorded authority, not us. The funds sit there permanently.
+This is **a consequence of the custody window and it is the intended trade**, not a defect: before
+the window, the authority could push the payment forward indefinitely, which meant a rescue existed
+and also meant the sender's exposure had no end. Bounding the exposure is what closes the rescue,
+and for a non custodial escrow that is the right side to land on, since the alternative is an
+operator who can move a sender's money at an arbitrary future date. It is written here because the
+trade has a cost and the cost lands on whoever holds the sender key. One caveat that cuts the other
+way, stated so nobody reads more finality into this than there is: the program is upgradeable, so
+its upgrade authority could deploy a version that adds an exit. That is not a property of this
+design, it is the operational risk in [Upgrade authority](#upgrade-authority); on a deployment where
+that authority has been removed, the dead end is absolute.
+
+One escrow on devnet is in the on-chain half of that state right now, which is the cheapest way to
+see it: `4VopXGzBLyy1LtCm8ms881Vpo45ByApjFoUiZATquLiE`, still `Deposited`, deadline passed on
+2026-08-04, 10 units of Circle's devnet USDC. Its release is already impossible and its only exit is
+a `refund` signed by `4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P`. That key is demonstrably in
+use, since it signed the other live deposit within the last day (the 24 hour ceiling puts a bound on
+when), so this escrow is not stranded. It is what the stranded state looks like from the outside,
+and the only difference between the two is off chain: whether somebody still holds that key.
+`list-live-escrows.py` flags it.
+
+**The index fills up with finished escrows, and only a manual call empties it.**
+`register_escrow` requires the escrow to be `Deposited`, but it checks that once, when the id is
+registered. Nothing removes the entry later: `release`, `refund` and `close` do not touch the
+`EscrowIndex` and do not even list the account, so an id stays in the index after its escrow is
+terminal and after its `EscrowState` has been closed. The only way out is calling
+`deregister_escrow` for that id, and no instruction and no client does it automatically today:
+grepping both consumers for `deregisterEscrow` returns only their vendored copies of the IDL. The
+cap is `MAX_ENTRIES = 32`, so a sender with 32 registered and never deregistered ids, successful or
+not, gets `EscrowIndexFull` (6005) on the 33rd `register_escrow`. That matters more than it sounds:
+the heaviest supported transaction shape, the one the off-chain co-signer accepts and the one this
+README measures at 57,326 compute units, is `deposit` plus `register_escrow` in **one atomic
+transaction**, so in that shape the error takes the deposit down with it and the sender cannot open
+a new escrow that way until somebody cleans up. A `deposit` sent on its own still lands, because
+`deposit` never touches the index. No funds are at risk at any point, the index holds 16 byte ids
+and never holds tokens, and one `deregister_escrow` per finished id frees the slot. What does not
+exist is anything that issues those calls. There is more than one reasonable fix and none has been
+chosen; this entry exists so that the choice is made rather than defaulted into.
+
 **`EscrowIndex` rent is not recoverable.**
 There is no instruction that closes the index account. Once a sender creates one, its rent stays
 locked. It is a one time cost per sender, not per escrow, and `deregister_escrow` keeps the
@@ -573,9 +642,10 @@ the network fee (approximately 0.005 SOL per deposit transaction) for facilitato
 one key can replace this program's code on devnet. Anyone can read this in thirty seconds with
 `solana program show`, so we would rather state it plainly: **this is a known operational risk.**
 
-That is deliberate for this stage. The program is on devnet with a test mint and no real value,
-and it is still changing, as the two recovery instructions show. An immutable program is a bad
-place to discover that a design needs one more instruction.
+That is deliberate for this stage. The program is on devnet, where every balance it holds is faucet
+money with no real value (today that is Circle's devnet USDC, not our own test mint: see
+[The mint](#the-mint)), and it is still changing, as the two recovery instructions show. An
+immutable program is a bad place to discover that a design needs one more instruction.
 
 It is also not acceptable for mainnet. Before any mainnet deployment the authority has to move to
 a multisig with a timelock, or the program has to be deployed final after an external audit. We
@@ -620,11 +690,42 @@ Two devnet mints show up around this program and they are easy to confuse:
 
 | Mint | What it is |
 |------|-----------|
-| `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | **The one the devnet escrow actually runs on.** Our own 6 decimal test mint, mint authority `4wPhH4dCndAEbdKJS3TC3JF6eeNfC4JrVej4DoYd54jH`, so we can mint test balances at will. |
-| `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | Circle's USDC devnet mint, 6 decimals, mint authority `GrNg1XM2ctzeE2mXxXCfhcTUbejM8Z4z4wNVTy2FjMEz`, which is not ours. Reference value only. Do not assume the escrow holds this mint. |
+| `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | Our own 6 decimal test mint, mint authority `4wPhH4dCndAEbdKJS3TC3JF6eeNfC4JrVej4DoYd54jH`, so we can mint test balances at will. **Freeze authority: none at all** (`freezeAuthority: null`), so no third party can freeze a vault holding it. |
+| `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | Circle's USDC devnet mint, 6 decimals, mint authority `GrNg1XM2ctzeE2mXxXCfhcTUbejM8Z4z4wNVTy2FjMEz`, which is not ours. **Freeze authority `CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT`, which is not ours either.** |
 
-Both were read on chain when this table was written, and the escrow state accounts on devnet
-record the first one.
+**Which one the escrow actually holds, read on chain on 2026-08-05.** Of the eight `EscrowState`
+accounts of this program on devnet, six record the test mint and two record Circle's devnet USDC.
+Those two are the only ones still `Deposited`: `4VopXGzBLyy1LtCm8ms881Vpo45ByApjFoUiZATquLiE` with
+10.000000 units and `4YpeqyZXahcBpSzyh2eaTc3dRxbarFgHfUR2QoV7JXJx` with 5.000000. The six on the
+test mint are all terminal. So **every unit this program custodies today is on Circle's mint**, not
+on ours. Until this paragraph was rewritten, this section said the escrow ran on the test mint and
+told the reader not to assume it held Circle's. That stopped being true once deposits started
+arriving on Circle's mint, which came from a different sender (`4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P`)
+than the six on the test mint (`8tJVcM2JehYkyPLHUZ3rxNvhfADaQdHx7xaJw6kS6ux8`), and nothing updated
+the text.
+
+That is not a cosmetic drift, and here is why. [Known limitations](#known-limitations) names a
+mint's freeze authority as the only path to permanent entrapment we know of. Our test mint cannot
+take that path, it has no freeze authority to use. Circle's devnet mint has one and it is not ours,
+so that limitation applies to **100% of the balance custodied right now**, rather than to a
+hypothetical mint someone might use later. What that costs today is nothing: this is devnet, the
+15 units are faucet balances, and neither vault is frozen. The two vaults are
+`CrtFReeHXq24QrNJGpt2szkTWsBx5YcgJTWnWYvCLSxZ` and
+`7wor99nsGcXw8eTsn6F4QdqPX2SjMLdQHwS21XnrUrTT`, and both report `state: initialized`, read the same
+day. The exposure is real in kind and zero in value, and the sentence that told a reader not to
+look here was the actual defect.
+
+Both facts are one command each:
+
+```bash
+python3 scripts/list-live-escrows.py --url devnet     # prints the mint of every EscrowState
+
+curl -s https://api.devnet.solana.com -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getAccountInfo",
+       "params":["4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",{"encoding":"jsonParsed"}]}'
+```
+
+The second one prints `freezeAuthority` for whatever mint you put in it, `null` included.
 
 The test suite creates its own synthetic 6 decimal mint per run, since no external mint is
 reachable in the in-process bank.
@@ -792,6 +893,11 @@ it cannot be released at all, and the only exit left is the refund, which only t
 
 The funds are never lost. What changes, with no way back, is who holds the exit. That should be a
 decision somebody took, not a side effect somebody discovered afterwards.
+
+"Never lost" is exact only while the sender can still sign. The refund is the last exit, so if the
+sender's key is lost the escrow becomes unreachable by everyone, permanently. That is the trade the
+custody window makes and it is written up in
+[Known limitations](#known-limitations).
 
 So, before running the deploy:
 
