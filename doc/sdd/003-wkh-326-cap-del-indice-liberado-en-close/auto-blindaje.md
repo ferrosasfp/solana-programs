@@ -6,9 +6,12 @@ los repita.
 ### [2026-08-05 13:52] Wave 0 — el assert por ciclo del test 14 tapaba el error que W0 tiene que mostrar
 
 - **Error**: el pseudocódigo del Story File pone `assert entries.length <= 1` *dentro* del loop de 33
-  ciclos. Escrito así, contra el binario de hoy el test aborta en el **ciclo 1** (el índice acumula:
-  `[A]`, `[A,B]`, …) y nunca llega al `register_escrow` número 33. La evidencia roja de CD-10 habría
-  sido una AssertionError de longitud, no el `EscrowIndexFull` / 6005 que la HU necesita registrar.
+  ciclos. Escrito así, contra el binario de hoy el test aborta en el **ciclo 2** y nunca llega al
+  `register_escrow` número 33. (El ciclo 1 pasa: el índice acumula `[A]`, y `1 <= 1` es verdadero;
+  recién en el ciclo 2 vale `[A,B]` y `2 <= 1` falla. Ese `[A,B]` — el índice con dos entradas
+  después de un `close` — está en `w0-red.txt:7726-7731`, ahí reportado por el test 12.)
+  La evidencia roja de CD-10 habría sido una AssertionError de longitud, no el `EscrowIndexFull` /
+  6005 que la HU necesita registrar.
 - **Causa raíz**: el mismo test tiene que cumplir dos cosas que se pisan — verificar una propiedad
   *por ciclo* y llegar hasta el ciclo 33 para exhibir el error real.
 - **Fix**: se mide la longitud al final de cada ciclo y se guarda en un array; la aserción corre
@@ -51,3 +54,38 @@ los repita.
 - **Aplicar en**: cualquier verificación de "no toqué X". El comando tiene que poder mostrar el caso
   malo. Si nunca lo vi fallar, no sé si sabe fallar — y acá además el chequeo global de "repo limpio"
   no sirve en un workspace compartido: hay que nombrar los archivos concretos.
+
+### [2026-08-05 18:40] Fix-pack — puse un rango medido como si fuera una cota, y la corrida siguiente lo tumbó
+
+- **Error**: arreglando el `console.log` del test 21 (F6), lo etiqueté con los tres samples que
+  tenía: "ranged -2047..+3953 over 3 runs". La corrida inmediatamente posterior, contra el **mismo**
+  binario, imprimió **+18953**. O sea que la etiqueta que acababa de escribir para dejar de mentir
+  sobre ese número ya mentía sobre él.
+- **Causa raíz**: tres samples de una variable cuyo mecanismo es "diferencia entre dos búsquedas de
+  bump" no acotan nada. Cada escrow puede necesitar hasta 255 iteraciones, así que el rango posible
+  es de decenas de miles de CU y tres muestras no lo tocan ni de lejos. Confundí "lo que vi" con "lo
+  que puede pasar", que es el mismo error de fondo que la etiqueta pretendía corregir.
+- **Fix**: la etiqueta pasó a describir el **mecanismo**, no el rango: los cuatro samples
+  (-2047, +2453, +3953, +18953) son todos congruentes con **953 módulo 1_500**, que es exactamente
+  la forma de "un costo marginal real de ~953 CU más un número entero de iteraciones de bump". Eso
+  sí es falsable con un sample nuevo, y explica por qué puede salir negativo.
+- **Aplicar en**: cualquier número medido que se documente. Si no sé el mecanismo que lo genera, N
+  samples son N samples y no una cota. Escribir la congruencia / la fórmula, o escribir "no acotado",
+  pero nunca `min..max` de lo observado presentado como si fuera el rango.
+
+### [2026-08-05 18:55] Fix-pack — un criterio de restauración escrito como literal envejece y acusa al que restauró bien
+
+- **Error**: `doc/mutation-run.md` decía `# must be 43 passing` como criterio para saber si la
+  restauración post-mutante salió bien, en un archivo cuyo propio encabezado ya registraba una
+  segunda baseline de 54 sesenta y siete líneas más arriba. El archivo se contradecía consigo mismo.
+- **Causa raíz**: el criterio se escribió como el valor de una corrida en vez de como una referencia
+  a la baseline de la rama. Cualquier HU que agregue un test lo rompe, y el modo de falla es el peor
+  posible: el que restaura BIEN ve un número distinto al literal y concluye que restauró mal — que es
+  justo el error que ese archivo documenta haber cometido dos veces.
+- **Fix**: el criterio ahora dice "must match the baseline recorded at the top of this file", con un
+  párrafo que lista las tres baselines (43 / 54 / 55) y manda a tomarla de una corrida limpia si el
+  árbol se movió. Además el fix-pack agregó una tercera baseline (55), así que el literal habría
+  quedado mal por segunda vez en la misma semana.
+- **Aplicar en**: todo criterio de pass/fail escrito en prosa. Si el criterio es un número que el
+  repo ya guarda en otro lado, referenciar ese lado. Un número duplicado es un número que se va a
+  desincronizar.

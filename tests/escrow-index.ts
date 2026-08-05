@@ -902,6 +902,37 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
     await expectRevert(builder().rpc(), "AccountNotInitialized");
   });
 
+  // The SECOND footgun of the optional account, the one lib.rs:714-717 describes: passing
+  // `escrowIndex: null` when the index DOES exist and DOES hold the id is not an error, it just
+  // leaves the entry dangling. 13 and 13b only cover senders that never registered anything, so
+  // without this test that warning would be written down and never executed — the same gap the
+  // comment above `close()` says 13b exists to avoid.
+  it("13c. close with escrowIndex=null when the index HOLDS the id confirms and leaves the entry dangling", async () => {
+    const id = rid(132);
+    const r = await deposit(id, DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
+    await register(id, r.escrowState);
+
+    const pda = indexPda(sender.publicKey);
+    expect(
+      idsOf((await program.account.escrowIndex.fetch(pda)).entries),
+      "precondition: the index exists and holds this id"
+    ).to.deep.equal([hex(id)]);
+
+    await release(id, r.escrowState, r.vault);
+    await close(id, r.escrowState, r.vault, null); // omitted ON PURPOSE
+
+    // The tx confirms and the escrow is gone, but its entry outlives it: it keeps occupying one of
+    // the 32 slots until somebody calls deregister_escrow with this id. For this id the monotonic
+    // cap is back. This is the documented behaviour, not a bug being asserted into place — the fix
+    // is client side (getAccountInfo on the PDA before building the tx), and it is why the rule in
+    // lib.rs exists.
+    expect(await context.banksClient.getAccount(r.escrowState)).to.equal(null);
+    expect(
+      idsOf((await program.account.escrowIndex.fetch(pda)).entries),
+      "the entry survives the escrow it pointed at"
+    ).to.deep.equal([hex(id)]);
+  });
+
   // ---- T14: the cap stops being a lifetime cap (WKH-326 / AC-3) ------------
 
   it("14. 33 deposit→register→release→close cycles with the SAME sender all succeed (AC-3)", async () => {
@@ -909,8 +940,9 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
     const deadline = nowTs + FIXTURE_TTL;
     const CYCLES = MAX_ENTRIES + 1; // 33: one past the cap
     // Entry count measured at the END OF EACH cycle. It is recorded and asserted AFTER the loop on
-    // purpose: asserting inside would abort at cycle 1 against the un-fixed binary and hide the
-    // EscrowIndexFull of the 33rd register_escrow, which is the failure W0 exists to record (CD-10).
+    // purpose: asserting inside would abort at cycle 2 against the un-fixed binary (cycle 1 leaves
+    // [A] and passes any `<= 1`; cycle 2 leaves [A,B] and fails) and hide the EscrowIndexFull of the
+    // 33rd register_escrow, which is the failure W0 exists to record (CD-10).
     const perCycleLen: number[] = [];
     let registersConfirmed = 0;
 
@@ -929,10 +961,15 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
     expect(registersConfirmed, "the 33rd register_escrow must confirm").to.equal(
       CYCLES
     );
+    // `equal(0)`, not `at.most(1)`. Against the fixed binary every cycle ends with an EMPTY index:
+    // the close of cycle i removes the entry that the register of cycle i added. The one unit of
+    // slack that `<= 1` allows is not free — under M16 (the `retain` flipped to `==`, which keeps
+    // the id just closed and drops the open ones) the series is stable at 1, so `at.most(1)` lets
+    // that mutant through and `equal(0)` kills it. Both revisers measured this.
     expect(
       Math.max(...perCycleLen),
       `entries per cycle: ${perCycleLen.join(",")}`
-    ).to.be.at.most(1);
+    ).to.equal(0);
   });
 
   // ---- T15: the index of somebody else (WKH-326 / AC-4) --------------------
@@ -1212,7 +1249,19 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
     const cuWithout = Number(withoutIndex.computeUnitsConsumed);
     console.log(`[T21] computeUnitsConsumed(close, with index)    = ${cuWith}`);
     console.log(`[T21] computeUnitsConsumed(close, escrowIndex=null) = ${cuWithout}`);
-    console.log(`[T21] difference (same run, DIFFERENT escrows)  = ${cuWith - cuWithout}`);
+    // The third number is DOMINATED BY NOISE and CAN COME OUT NEGATIVE. It is not the cost of the
+    // index. The two closes above are two DIFFERENT escrows, so the difference carries the delta
+    // between their canonical bump searches, ~1_500 CU per extra sha256 iteration (same mechanism
+    // as T11). Four samples against the same binary: -2047, +2453, +3953, +18953. In the first one
+    // the close WITH the index came out CHEAPER than the one without, which is impossible as a cost
+    // of writing. The four are all congruent to 953 modulo 1_500, which is what a marginal cost of
+    // ~953 CU plus a whole number of bump iterations looks like — but no single sample shows that,
+    // which is the whole point. Printed labelled rather than bare so nobody re-derives it from the
+    // two numbers above and believes it.
+    console.log(
+      `[T21] difference (same run, DIFFERENT escrows — NOISE, samples -2047..+18953, all ≡ 953 ` +
+        `mod 1_500, can be negative, NOT the cost of the index) = ${cuWith - cuWithout}`
+    );
 
     // both closes really happened, and the one with the index really removed the entry
     expect(await context.banksClient.getAccount(a.escrowState)).to.equal(null);

@@ -38,4 +38,24 @@ El `.so` sí cambió de md5 con los comentarios de W5 (`70480969…` → `d4b736
 línea de lógica. Motivo verificado, no supuesto: el binario embebe la ruta del fuente y los macros
 de Anchor embeben el **número de línea** del constraint que falla (los logs dicen `AnchorError thrown
 in programs/escrow/src/lib.rs:354`). Los comentarios de W5 corrieron las líneas de abajo, así que
-esos números cambiaron. Refutable: `strings target/deploy/escrow.so | grep lib.rs`.
+esos números cambiaron.
+
+Refutable con dos inputs que **sí ejecutan** (el `strings target/deploy/escrow.so | grep lib.rs` que
+figuraba acá antes no sirve: devuelve 3 hits, los tres la *ruta* del fuente, **cero** números de
+línea, así que no puede ni confirmar ni tumbar la afirmación):
+
+```bash
+# 1. el binario embebe números de línea de constraints — 8 distintos hoy
+anchor test --skip-build --skip-deploy --skip-local-validator > /tmp/suite.log 2>&1
+grep -o 'AnchorError thrown in .*lib.rs:[0-9]*' /tmp/suite.log | sort -u
+
+# 2. entre el commit del código (3cbefb2) y el de los comentarios de W5 (4345539) no cambió
+#    ni una línea que no sea comentario — el diff sale VACÍO
+git show 3cbefb2:programs/escrow/src/lib.rs > /tmp/pre.rs
+git show 4345539:programs/escrow/src/lib.rs > /tmp/post.rs
+diff <(grep -v '^\s*//' /tmp/pre.rs) <(grep -v '^\s*//' /tmp/post.rs)
+```
+
+Corridos el 2026-08-05: (1) devuelve `lib.rs:148,155,159,198,207,246,250,354`; (2) sale vacío, exit
+0. Los dos juntos son lo que sostiene la conclusión: el fuente lógico es idéntico y lo único que el
+binario pudo haber absorbido son los números de línea que los comentarios corrieron.
