@@ -304,6 +304,29 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
       .rpc();
   }
 
+  // W0 (CD-10): this helper carries the SIX accounts that `close` declares in the CURRENTLY built
+  // IDL. The optional `escrow_index` account does not exist in target/idl/escrow.json yet, so
+  // naming the key here would make the W0 tests fail for the wrong reason. W1 adds the 4th
+  // parameter, and from W1 on every `.close(` in this repo passes the key explicitly (CD-14).
+  function close(
+    remittanceId: Uint8Array,
+    escrowState: PublicKey,
+    vault: PublicKey
+  ) {
+    return program.methods
+      .close(Array.from(remittanceId))
+      .accountsPartial({
+        sender: sender.publicKey,
+        mint,
+        escrowState,
+        vault,
+        senderAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([sender])
+      .rpc();
+  }
+
   // CD-12: bankrun dedups txs by signature. Any retry of an identical-shape tx must advance the
   // slot (fresh blockhash) or it "passes" without ever executing.
   async function bumpSlot() {
@@ -769,5 +792,63 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
 
     expect(cu).to.be.greaterThan(0);
     expect(cu).to.be.lessThan(CU_REGRESSION_GUARD);
+  });
+
+  // ---- T12: close removes exactly its own entry (WKH-326 / AC-1) -----------
+
+  it("12. close removes exactly the entry of the escrow it closes and leaves the rest in order (AC-1)", async () => {
+    const idA = rid(120);
+    const idB = rid(121);
+    const deadline = nowTs + FIXTURE_TTL;
+    const a = await deposit(idA, DEPOSIT_AMOUNT, deadline);
+    const b = await deposit(idB, DEPOSIT_AMOUNT, deadline);
+    await register(idA, a.escrowState);
+    await register(idB, b.escrowState);
+
+    const pda = indexPda(sender.publicKey);
+    expect(
+      idsOf((await program.account.escrowIndex.fetch(pda)).entries)
+    ).to.deep.equal([hex(idA), hex(idB)]);
+
+    await release(idA, a.escrowState, a.vault);
+    await close(idA, a.escrowState, a.vault);
+
+    // Exactly [B]: [A,B] means the retain never ran, [] means it wiped the index, [B,A] means it
+    // reordered. Each of the three is a distinct bug and each shows up as a different diff here.
+    const idx = await program.account.escrowIndex.fetch(pda);
+    expect(idsOf(idx.entries)).to.deep.equal([hex(idB)]);
+  });
+
+  // ---- T14: the cap stops being a lifetime cap (WKH-326 / AC-3) ------------
+
+  it("14. 33 deposit→register→release→close cycles with the SAME sender all succeed (AC-3)", async () => {
+    const pda = indexPda(sender.publicKey);
+    const deadline = nowTs + FIXTURE_TTL;
+    const CYCLES = MAX_ENTRIES + 1; // 33: one past the cap
+    // Entry count measured at the END OF EACH cycle. It is recorded and asserted AFTER the loop on
+    // purpose: asserting inside would abort at cycle 1 against the un-fixed binary and hide the
+    // EscrowIndexFull of the 33rd register_escrow, which is the failure W0 exists to record (CD-10).
+    const perCycleLen: number[] = [];
+    let registersConfirmed = 0;
+
+    for (let i = 0; i < CYCLES; i++) {
+      const id = rid(150 + i); // 150..182 — rid() only writes b[0], so the seed must be unique
+      const { escrowState, vault } = await deposit(id, DEPOSIT_AMOUNT, deadline);
+      await register(id, escrowState); // i = 32 is the one that reverts before this HU
+      registersConfirmed++;
+      await release(id, escrowState, vault);
+      await close(id, escrowState, vault);
+      perCycleLen.push(
+        (await program.account.escrowIndex.fetch(pda)).entries.length
+      );
+    }
+
+    expect(registersConfirmed, "the 33rd register_escrow must confirm").to.equal(
+      CYCLES
+    );
+    expect(
+      Math.max(...perCycleLen),
+      `entries per cycle: ${perCycleLen.join(",")}`
+    ).to.be.at.most(1);
   });
 });
