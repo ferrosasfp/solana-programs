@@ -191,12 +191,22 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
     return Object.keys(status)[0];
   }
 
+  // `signer` defaults to `sender`, so every pre-existing call site keeps the exact same accounts:
+  // ataOf(sender) is the same address createAta() built for senderAta. Test 15 needs an escrow
+  // owned by the ATTACKER (an attacker closing someone else's escrow is stopped by the escrow
+  // seeds, which is a different guard from the one AC-4 is about).
+  function ataOf(owner: PublicKey): PublicKey {
+    return getAssociatedTokenAddressSync(mint, owner, true);
+  }
+
   async function deposit(
     remittanceId: Uint8Array,
     amount: bigint,
-    deadline: bigint
+    deadline: bigint,
+    signer: Keypair = sender
   ) {
-    const { escrowState, vault } = pdas(remittanceId);
+    const [escrowState] = escrowPda(remittanceId, signer.publicKey);
+    const vault = ataOf(escrowState);
     await program.methods
       .deposit(
         Array.from(remittanceId),
@@ -206,16 +216,16 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
         new anchor.BN(deadline.toString())
       )
       .accountsPartial({
-        sender: sender.publicKey,
+        sender: signer.publicKey,
         mint,
         escrowState,
         vault,
-        senderAta,
+        senderAta: ataOf(signer.publicKey),
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
-      .signers([sender])
+      .signers([signer])
       .rpc();
     return { escrowState, vault };
   }
@@ -286,12 +296,17 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
       .rpc();
   }
 
-  function release(remittanceId: Uint8Array, escrowState: PublicKey, vault: PublicKey) {
+  function release(
+    remittanceId: Uint8Array,
+    escrowState: PublicKey,
+    vault: PublicKey,
+    escrowOwner: Keypair = sender
+  ) {
     return program.methods
       .release(Array.from(remittanceId))
       .accountsPartial({
         authority: authority.publicKey,
-        sender: sender.publicKey,
+        sender: escrowOwner.publicKey,
         beneficiary: beneficiary.publicKey,
         mint,
         escrowState,
@@ -312,20 +327,21 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
     remittanceId: Uint8Array,
     escrowState: PublicKey,
     vault: PublicKey,
-    escrowIndex: PublicKey | null = null
+    escrowIndex: PublicKey | null = null,
+    signer: Keypair = sender
   ) {
     return program.methods
       .close(Array.from(remittanceId))
       .accountsPartial({
-        sender: sender.publicKey,
+        sender: signer.publicKey,
         mint,
         escrowState,
         vault,
-        senderAta,
+        senderAta: ataOf(signer.publicKey),
         tokenProgram: TOKEN_PROGRAM_ID,
         escrowIndex,
       })
-      .signers([sender])
+      .signers([signer])
       .rpc();
   }
 
@@ -821,6 +837,71 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
     expect(idsOf(idx.entries)).to.deep.equal([hex(idB)]);
   });
 
+  // ---- T13: the sender who never registered anything (WKH-326 / AC-2) ------
+  //
+  // This is the path that runs in production today: the only consumer that builds transactions for
+  // this program builds `deposit`, never `register_escrow`. If this test goes red, the change broke
+  // what already works.
+
+  it("13. close with escrowIndex=null confirms and does NOT create the index account (AC-2)", async () => {
+    const id = rid(130);
+    const r = await deposit(id, DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
+    await release(id, r.escrowState, r.vault);
+
+    const pda = indexPda(sender.publicKey);
+    expect(
+      await context.banksClient.getAccount(pda),
+      "precondition: register_escrow was never called"
+    ).to.equal(null);
+
+    await close(id, r.escrowState, r.vault, null);
+
+    // Two assertions, and the second is not decoration: an `init_if_needed` on this account would
+    // make the tx confirm all the same while charging the sender 4_774_560 lamports of rent for an
+    // empty index whose rent no instruction gives back.
+    expect(await context.banksClient.getAccount(r.escrowState)).to.equal(null);
+    expect(
+      await context.banksClient.getAccount(pda),
+      "close must not create the index PDA"
+    ).to.equal(null);
+  });
+
+  it("13b. leaving the escrowIndex key out does NOT omit the account: the client sends the PDA (CD-14)", async () => {
+    const id = rid(131);
+    const r = await deposit(id, DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
+    await release(id, r.escrowState, r.vault);
+
+    // Same accounts object as the helper, minus the `escrowIndex` key.
+    const builder = () =>
+      program.methods
+        .close(Array.from(id))
+        .accountsPartial({
+          sender: sender.publicKey,
+          mint,
+          escrowState: r.escrowState,
+          vault: r.vault,
+          senderAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([sender]);
+
+    const ix = await builder().instruction();
+    // keys[6] is the position of escrow_index (CD-15 puts it last). If this ever equals the
+    // programId, the client DID omit the account and CD-14 would be unnecessary — that is a finding,
+    // not a green test.
+    expect(ix.keys.length).to.equal(7);
+    expect(ix.keys[6].pubkey.toBase58()).to.equal(
+      indexPda(sender.publicKey).toBase58()
+    );
+    expect(ix.keys[6].pubkey.toBase58()).to.not.equal(
+      program.programId.toBase58()
+    );
+
+    // and the account it silently sent does not exist, so the tx dies with an error that never
+    // says the word "optional"
+    await expectRevert(builder().rpc(), "AccountNotInitialized");
+  });
+
   // ---- T14: the cap stops being a lifetime cap (WKH-326 / AC-3) ------------
 
   it("14. 33 deposit→register→release→close cycles with the SAME sender all succeed (AC-3)", async () => {
@@ -852,5 +933,107 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
       Math.max(...perCycleLen),
       `entries per cycle: ${perCycleLen.join(",")}`
     ).to.be.at.most(1);
+  });
+
+  // ---- T15: the index of somebody else (WKH-326 / AC-4) --------------------
+
+  it("15. close with the VICTIM's index reverts ConstraintSeeds and leaves that index untouched (AC-4)", async () => {
+    const deadline = nowTs + FIXTURE_TTL;
+
+    // victim: registers an entry it expects to keep
+    const victimId = rid(140);
+    const v = await deposit(victimId, DEPOSIT_AMOUNT, deadline);
+    await register(victimId, v.escrowState);
+    const victimIndex = indexPda(sender.publicKey);
+    expect(
+      idsOf((await program.account.escrowIndex.fetch(victimIndex)).entries)
+    ).to.deep.equal([hex(victimId)]);
+
+    // attacker: an escrow of its OWN, terminal, so the only thing left to reject is the index
+    const attackerAta = await createAta(attacker.publicKey);
+    await mintTo(attackerAta, 10n * ONE_TOKEN);
+    const attackerId = rid(141);
+    const a = await deposit(attackerId, DEPOSIT_AMOUNT, deadline, attacker);
+    await release(attackerId, a.escrowState, a.vault, attacker);
+
+    // the attacker is funded in beforeEach on purpose: a failure here is a guard, not missing rent
+    await expectRevert(
+      close(attackerId, a.escrowState, a.vault, victimIndex, attacker),
+      "ConstraintSeeds"
+    );
+
+    // entry by entry, the victim's index is exactly what it was
+    expect(
+      idsOf((await program.account.escrowIndex.fetch(victimIndex)).entries)
+    ).to.deep.equal([hex(victimId)]);
+  });
+
+  // ---- T16: the index write moves no tokens (WKH-326 / AC-5 bis) -----------
+
+  it("16. close with the index moves exactly the same tokens as before the change (AC-5)", async () => {
+    const idA = rid(142);
+    const idB = rid(143);
+    const deadline = nowTs + FIXTURE_TTL;
+    const a = await deposit(idA, DEPOSIT_AMOUNT, deadline);
+    const b = await deposit(idB, DEPOSIT_AMOUNT, deadline);
+    await register(idA, a.escrowState);
+    await register(idB, b.escrowState);
+    await release(idA, a.escrowState, a.vault);
+
+    // measured right before the close, so the deltas below belong to the close and to nothing else
+    const vaultABefore = await tokenBalance(a.vault);
+    const vaultBBefore = await tokenBalance(b.vault);
+    const senderBefore = await tokenBalance(senderAta);
+    const beneficiaryBefore = await tokenBalance(beneficiaryAta);
+    expect(vaultABefore, "release already emptied vault A").to.equal(0n);
+
+    await close(idA, a.escrowState, a.vault, indexPda(sender.publicKey));
+
+    expect(await tokenBalance(a.vault)).to.equal(-1n); // vault closed, not merely emptied
+    expect(await tokenBalance(b.vault)).to.equal(vaultBBefore);
+    expect(await tokenBalance(senderAta)).to.equal(senderBefore); // nothing to sweep here
+    expect(await tokenBalance(beneficiaryAta)).to.equal(beneficiaryBefore);
+    // The case with a NON-empty vault at close time (the sweep) is covered by D1 and D1b in
+    // tests/escrow-window.ts, which run the same instruction with dust donated to the vault.
+  });
+
+  // ---- T17: order of the constraints (WKH-326 / AC-6) ---------------------
+
+  it("17. close on a Deposited escrow reverts EscrowNotTerminal and removes no entry (AC-6)", async () => {
+    const id = rid(144);
+    const r = await deposit(id, DEPOSIT_AMOUNT, nowTs + FIXTURE_TTL);
+    await register(id, r.escrowState);
+    const pda = indexPda(sender.publicKey);
+
+    await expectRevert(
+      close(id, r.escrowState, r.vault, pda),
+      "EscrowNotTerminal"
+    );
+
+    // A reverted tx writes nothing, so this second assertion is not about atomicity: it is what
+    // goes red if somebody ever moves the retain to a place that runs before the constraint.
+    expect(
+      idsOf((await program.account.escrowIndex.fetch(pda)).entries)
+    ).to.deep.equal([hex(id)]);
+  });
+
+  // ---- T18: an id that is not in the index (WKH-326 / AC-7) ---------------
+
+  it("18. close with an index that does not contain the id confirms and leaves entries alone (AC-7)", async () => {
+    const idA = rid(145);
+    const idB = rid(146);
+    const deadline = nowTs + FIXTURE_TTL;
+    const a = await deposit(idA, DEPOSIT_AMOUNT, deadline);
+    const b = await deposit(idB, DEPOSIT_AMOUNT, deadline);
+    await register(idB, b.escrowState); // only B is in the index
+    await release(idA, a.escrowState, a.vault);
+
+    const pda = indexPda(sender.publicKey);
+    await close(idA, a.escrowState, a.vault, pda); // must NOT revert
+
+    expect(
+      idsOf((await program.account.escrowIndex.fetch(pda)).entries)
+    ).to.deep.equal([hex(idB)]);
+    expect(await context.banksClient.getAccount(a.escrowState)).to.equal(null);
   });
 });
