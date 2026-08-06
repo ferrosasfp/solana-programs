@@ -28,7 +28,7 @@ This is a project under implementation, not a finished product.
 | External audit | **None.** The program has not been reviewed by a third party security firm. |
 | Test coverage | 55 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. On top of those, the custody window was exercised against the deployed program with seven real transactions, including the one that needs a genuinely expired deadline: see [The custody window, exercised against the deployed program](#the-custody-window-exercised-against-the-deployed-program). |
 | CI | **Green.** clippy, `anchor build` and the 55 tests run on every push. See [Continuous integration](#continuous-integration). |
-| Reproducible build | **The mechanism is green, but not yet against the binary deployed on 2026-08-05.** A GitHub runner rebuilt this tree in the pinned container after the 2026-08-01 deploy and its hash matched the program on devnet **then**. For the binary running today what is confirmed is narrower: the deployed bytes equal the artifact built on the machine that deployed them. The container rebuild runs again on the push that carries these hashes, and until that run is green this row does not claim more than it has. Nobody outside this project has repeated any of it. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
+| Reproducible build | **Confirmed for the binary deployed on 2026-08-05.** A GitHub runner rebuilt this tree in the pinned container on the push that carries these hashes ([run 31058371492](https://github.com/ferrosasfp/solana-programs/actions/runs/31058371492), commit `a0f9c27`) and both jobs passed: `reproducible-build` and `onchain-hash`. What that run establishes is that a machine which is not the developer's produced the same bytes that devnet serves. **What it does not establish: nobody outside this project has repeated any of it.** A GitHub runner is not this laptop, but it is still this project's workflow. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
 | On-chain IDL | **Published, and it describes what this tree builds.** Republished on 2026-08-05, right after the WKH-326 program deploy, in the canonical metadata account `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`. `anchor idl fetch` returns it and its canonical sha256 is `bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, which is also what `anchor build` produces here and what both consumers pin (`chaski-v3` `bd85dfa`, `wasiai-facilitator` `f9bddce`). Three copies, one number, each measured on its own rather than copied from the others. The explorer may still not render Anchor IDLs; fetching works regardless. See [Publishing the IDL on chain](doc/publish-idl-onchain.md), including why the documented command fails and what worked instead. **Three doc comments in `lib.rs` are still wrong, and the window to fix them was missed.** They state things that are not true today: the deadline is rejected, not clamped; the mint paragraph cites an off-chain co-signer check that does not exist yet; and the `MAX_ENTRIES` comment says the index only lists escrows in `Deposited`, which it does not, and sizes the constant on that. All three are corrected in adjacent `//` comments rather than by editing the `///` and `//!` themselves, because Anchor copies doc comments into the IDL and editing them moves the canonical sha256 that is published on chain and pinned by both consumers. Measured both ways on `main`: editing the doc comments moves the hash and turns the facilitator's cross-repo test red; adding plain `//` comments moves nothing. The 2026-08-05 republication was the moment when moving that hash would have been free, and **it was not used**: the IDL went on chain with the three wrong doc comments in it. Fixing them now would move the hash a third time and force another republication plus another re-pin in both consumers, so they stay as they are and travel with the next change that moves the hash anyway: the events HU, already queued, which changes the interface. That is the plan, not an excuse, and until it lands the `///` text on chain and in both vendored copies is wrong in those three places while the `//` next to it is right. One nuance, measured 2026-08-05: the third one sits on a `const`, and this IDL has no `constants` section, so that particular doc comment never reaches the IDL and editing it would have been safe. It was corrected with an adjacent `//` anyway, so the file keeps one rule instead of a rule plus an exception every future reader has to re-derive. |
 | Known issues | Written down below, **and three of them are about custody**: a mint with a freeze authority can freeze the vault (and the mint holding every custodied unit today has one), the vault's associated token account can be pre-created by a stranger to block a deposit, and past the deadline an escrow whose sender lost their key has no exit at all. See [Known limitations](#known-limitations). |
 
@@ -194,7 +194,7 @@ not exist.
 |---|---|
 | The deployed bytes equal our local `target/deploy/escrow.so` | **Confirmed** for the 2026-08-05 binary, on the machine that built and deployed it: devnet reports `verify-hash` `455e4e36...` and the local artifact (274800 bytes, `sha256` `10d6dd04...`) with trailing zeros trimmed hashes to the same value. The on-chain payload is that file plus 137768 zero bytes of reserved space. |
 | The binary carries no path from that machine | **Confirmed.** The only absolute path embedded is inside the precompiled platform-tools, identical for everyone using the same Agave version. |
-| A container rebuild reproduces those bytes | **Not re-run yet against the binary deployed on 2026-08-05.** It was confirmed for the 2026-08-01 one: a GitHub runner rebuilt this tree in the pinned container after that deploy ([run 30713836991](https://github.com/ferrosasfp/solana-programs/actions/runs/30713836991)) and printed `built verify hash 9d9c0679...` against `on-chain verify hash 9d9c0679...`, matching the developer machine byte for byte on the raw `.so` as well. The same job runs on the push that carries the new hashes; until it is green, this row is a pending check and not a claim. |
+| A container rebuild reproduces those bytes | **Confirmed for the binary deployed on 2026-08-05.** [Run 31058371492](https://github.com/ferrosasfp/solana-programs/actions/runs/31058371492) on commit `a0f9c27`, the push that carries the current hashes, passed both jobs: `reproducible-build` (the pinned container rebuilt this tree) and `onchain-hash` (the rebuilt bytes compared against devnet). The previous binary was confirmed the same way ([run 30713836991](https://github.com/ferrosasfp/solana-programs/actions/runs/30713836991), `9d9c0679...`). What this does **not** establish: nobody outside this project has repeated it. A GitHub runner is not the developer's machine, but it is still this project's workflow, so the independence it buys is partial. |
 | An independent third party reproduced it | **Not confirmed.** Nobody outside this project has tried yet. A GitHub runner is not our laptop, but it is still our workflow. |
 
 So: the mechanism is wired up and public, it was green against the previous binary, and it is
@@ -210,8 +210,11 @@ for this repository: Anchor 1.x does not depend on `solana-program`, so the lock
 `solana-program-error 3.0.1` and the tool would build with the 3.0.1 image. The deployed bytes
 came out of Agave 3.1.10, a different platform-tools, so the comparison would fail for a reason
 that has nothing to do with the source. The key is set to `3.1.10`
-([`Cargo.toml:20`](Cargo.toml#L20)) and has to move together with `rust-toolchain.toml`, the
-workflows, and the Toolchain table below.
+([`Cargo.toml:20`](Cargo.toml#L20)). It is the one version in this repository that a rebuild
+cannot survive being wrong about, so moving it means redeploying and republishing the hashes. The
+workflows and the Toolchain table below have to follow it, and `rust-toolchain.toml` does not:
+that file pins the host compiler, which was measured not to change the artifact. See the
+Toolchain table for the measurement.
 
 ## Flow
 
@@ -801,15 +804,27 @@ and the next suite run reported failures that had nothing to do with the code on
 
 ## Toolchain
 
-| Tool | Version |
-|------|---------|
-| rustc | 1.89.0, pinned by `rust-toolchain.toml` |
-| solana-cli (Agave) | 3.1.10, declared in `[workspace.metadata.cli]` so `solana-verify` picks the matching build image |
-| anchor-cli | 1.1.2 |
+| Tool | Version | Compiles the deployed binary? |
+|------|---------|-------------------------------|
+| rustc, host | 1.89.0, pinned by `rust-toolchain.toml` | No. It runs clippy and the host side tests |
+| rustc, platform-tools | 1.89.0-dev, LLVM 20.1.7, shipped inside Agave 3.1.10 | **Yes.** `cargo-build-sbf` overrides `rust-toolchain.toml` with a `+solana` rustup override |
+| solana-cli (Agave) | 3.1.10, declared in `[workspace.metadata.cli]` so `solana-verify` picks the matching build image | It selects the row above, so moving it moves the bytes |
+| anchor-cli | 1.1.2, in `Anchor.toml:4` and `ci.yml:15` | It drives the build, it is not the compiler |
 
-These versions appear in `rust-toolchain.toml`, `Cargo.toml`, both workflows and this table. They
-have to be changed together. A mismatch does not break the build, it breaks the reproduction,
-which is a quieter failure.
+The host pin and the compiler that produces `escrow.so` are two different things, and only one of
+them can change the artifact. Measured on 2026-08-06 rather than assumed: with
+`target/sbpf-solana-solana` deleted, `anchor build` was run twice, once with
+`channel = "1.89.0"` and once with `channel = "stable"` (rustc 1.97.1). Both runs produced
+`escrow.so` with `sha256` `10d6dd04...` and `verify-hash` `455e4e36...`, the value devnet holds.
+So a `rust-toolchain.toml` that disagrees with this table does **not** break the reproduction. It
+breaks the MSRV check: 1.89.0 is what makes `rust-version = "1.89.0"` in `Cargo.toml` a claim
+clippy actually compiles, and a newer channel can also fail `-D warnings` on lints that did not
+exist in 1.89.0.
+
+What does break the reproduction is `[workspace.metadata.cli] solana`, because it picks the
+platform-tools that emit the bytes. `README.md:196` is the same fact seen from the artifact: the
+only absolute paths embedded in `escrow.so` come from `platform-tools/.../out/rust/library/`,
+never from the host toolchain directory.
 
 ## Continuous integration
 
@@ -897,8 +912,10 @@ It was red for a while, and not because of the program: the workflow used to bui
 from its repository HEAD, and one of the CLI's own transitive dependencies raised its minimum
 supported rustc above the 1.89.0 this repository pins. The job died installing the tool, before it
 ever reached `anchor build`. The fix was to install the CLI from crates.io at the exact pinned
-version with `--locked`, and to give that one binary a separate modern host toolchain. The program
-is still compiled with 1.89.0, because `rust-toolchain.toml` applies inside the checkout.
+version with `--locked`, and to give that one binary a separate modern host toolchain. That second
+toolchain cannot leak into the artifact: `cargo +stable` is scoped to the install command, and the
+`.so` is emitted by the platform-tools rustc either way (see the Toolchain table). What the
+1.89.0 checkout override still buys is the clippy run on the declared MSRV.
 
 **Lints.** `cargo clippy --all-targets -- -D warnings` now runs before anything else, and the
 tree passes it. `cargo fmt` does **not** run and is not enforced: the program does not currently

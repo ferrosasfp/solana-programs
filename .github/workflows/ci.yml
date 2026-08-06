@@ -18,8 +18,11 @@ jobs:
         uses: actions/checkout@v4
 
       # rustc/cargo, pinned to the exact channel of rust-toolchain.toml (1.89.0,
-      # the version anchor-cli 1.1.2 pinned the project on) for reproducible,
-      # audit-ready builds. Must stay in sync with rust-toolchain.toml.
+      # which is also the `rust-version` declared in Cargo.toml). This is the HOST
+      # compiler: it runs clippy and the host side tests. It does not emit
+      # target/deploy/escrow.so, which cargo-build-sbf compiles with the rustc
+      # inside platform-tools (see rust-toolchain.toml for the A/B measurement).
+      # Must stay in sync with rust-toolchain.toml so clippy keeps checking the MSRV.
       - name: Install Rust (program toolchain)
         uses: dtolnay/rust-toolchain@1.89.0
         with:
@@ -39,8 +42,9 @@ jobs:
       # A second, modern host toolchain used ONLY to build the Anchor CLI binary.
       # anchor-cli 1.1.2 pulls cargo-platform 0.3.3, whose minimum supported rustc
       # is above 1.89.0, so building the tool with the program's pinned channel
-      # fails before the program is ever compiled. The program itself is still
-      # built with 1.89.0: rust-toolchain.toml applies inside the checkout.
+      # fails before the program is ever compiled. It cannot reach the artifact:
+      # `+stable` is scoped to the install command below, and the .so comes out of
+      # platform-tools regardless of which host channel is active.
       - name: Install Rust (host toolchain for the CLI)
         uses: dtolnay/rust-toolchain@stable
 
