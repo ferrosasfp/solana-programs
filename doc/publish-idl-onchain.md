@@ -4,9 +4,12 @@ Right now the explorer shows this program as raw bytes. Publishing the IDL is wh
 `Unknown instruction` into `deposit`, `release`, `refund` with named accounts and decoded
 arguments, for anybody looking at a transaction without cloning the repository.
 
-**Executed on 2026-08-01.** The IDL is published. `anchor idl fetch` returns it, and its canonical
-sha256 is `fb64c937dbdab7a58045e663a85724808c4539707fedbdf244e11a28dbe5c071`, the same value this
-repository builds and the same one pinned in `chaski-v3` and `wasiai-facilitator`.
+**Executed on 2026-08-01, and again on 2026-08-05 after the WKH-326 deploy.** The IDL is published.
+`anchor idl fetch` returns it, and its canonical sha256 is
+`bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, the same value this repository
+builds and the same one pinned in `chaski-v3` and `wasiai-facilitator`. The number it replaced,
+`fb64c937...`, is the 2026-08-01 one and appears below wherever this document describes that first
+publication.
 
 **The command in this document does not work, and the way it fails is worth knowing.** See
 [What actually worked](#what-actually-worked) at the end. The rest of the document is kept as it was
@@ -132,7 +135,15 @@ changed the IDL, so the vendored copies in both consumers are stale as of today.
 
 **All four ran on 2026-08-01, in that order.** Step 4 ran first in practice, because the consumers
 had to ship before the program did for an unrelated reason (see the README section on what the
-consumers needed). Both now pin `fb64c937...`.
+consumers needed). Both pinned `fb64c937...` at that point.
+
+**And all four ran again on 2026-08-05, for WKH-326, in the documented order this time:** the
+program went to devnet in slot `481495859`, the two binary hashes and `SOURCE_REPRODUCES_CHAIN`
+were updated in the workflow and the README, the IDL was republished through the buffer path (step
+3 still fails the documented way), and the two consumers were re-pinned last, `chaski-v3` at
+`bd85dfa` and `wasiai-facilitator` at `f9bddce`. Both now pin
+`bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, which is what `anchor idl fetch`
+returns and what `anchor build` produces in this tree.
 
 ## What actually worked
 

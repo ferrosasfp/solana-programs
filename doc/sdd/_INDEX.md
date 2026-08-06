@@ -24,7 +24,7 @@ reusar los números.
 |-----|-----|--------|--------|------------|
 | 001 | HU-SOL-?? | (histórica, carpeta ausente del árbol) | — | — |
 | 002 | HU-SOL-20 | escrow remittance-id recovery (`EscrowIndex`, `register_escrow`, `deregister_escrow`) | HECHO (desplegado 2026-08-01) | carpeta ausente del árbol; referenciada desde `chaski-v3/contracts/idl/escrow-idl.hash.test.ts:19-21` |
-| **003** | **WKH-326** | **El tope de 32 del índice de escrows deja de crecer para siempre** | **DONE — sin desplegar (CD-1), cerrado 2026-08-05** | [`work-item.md`](003-wkh-326-cap-del-indice-liberado-en-close/work-item.md) · [`sdd.md`](003-wkh-326-cap-del-indice-liberado-en-close/sdd.md) · [`story-HU-326.md`](003-wkh-326-cap-del-indice-liberado-en-close/story-HU-326.md) · [`ar-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/ar-report.md) · [`cr-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/cr-report.md) · [`qa-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/qa-report.md) · [`auto-blindaje.md`](003-wkh-326-cap-del-indice-liberado-en-close/auto-blindaje.md) · [`idl-hash.md`](003-wkh-326-cap-del-indice-liberado-en-close/idl-hash.md) · [`report.md`](003-wkh-326-cap-del-indice-liberado-en-close/report.md) |
+| **003** | **WKH-326** | **El tope de 32 del índice de escrows deja de crecer para siempre** | **DONE y DESPLEGADO en devnet el 2026-08-05, slot `481495859`** | [`work-item.md`](003-wkh-326-cap-del-indice-liberado-en-close/work-item.md) · [`sdd.md`](003-wkh-326-cap-del-indice-liberado-en-close/sdd.md) · [`story-HU-326.md`](003-wkh-326-cap-del-indice-liberado-en-close/story-HU-326.md) · [`ar-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/ar-report.md) · [`cr-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/cr-report.md) · [`qa-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/qa-report.md) · [`auto-blindaje.md`](003-wkh-326-cap-del-indice-liberado-en-close/auto-blindaje.md) · [`idl-hash.md`](003-wkh-326-cap-del-indice-liberado-en-close/idl-hash.md) · [`report.md`](003-wkh-326-cap-del-indice-liberado-en-close/report.md) |
 
 ## WKH-326 — resumen de una línea
 
@@ -32,7 +32,8 @@ reusar los números.
 `MAX_ENTRIES = 32` deja de contar "ids registrados en toda la vida del sender" y vuelve a contar
 "escrows sin cerrar". Implementado, revisado (AR, CR) y validado (QA: 9/9 ACs PASS, suite 55
 passing/0 failing corrida por el propio QA) en la rama `feat/326-cap-del-indice-liberado-en-close`,
-HEAD `c8b3f7d`. **Sin desplegar** (CD-1): sin merge a `main`, sin `anchor deploy`, sin tocar devnet.
+HEAD `c8b3f7d`. **Al cerrar la HU estaba sin desplegar** (CD-1): sin merge a `main`, sin
+`anchor deploy`, sin tocar devnet.
 Ver `003-wkh-326-cap-del-indice-liberado-en-close/report.md` para el cierre completo.
 
 - Camino elegido: **(a)**, `close` saca la entrada. Descartados (b) `release`/`refund`,
@@ -42,10 +43,17 @@ Ver `003-wkh-326-cap-del-indice-liberado-en-close/report.md` para el cierre comp
   "llamar a `close`".
 - Debe estar resuelta **antes** de que R4 (el cliente de `register_escrow`) llegue a producción.
 - Mueve el sha256 canónico del IDL, a `bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`
-  (medido, `idl-hash.md`). El número vive sólo en la carpeta de esta HU (CD-17): **no** se re-pinneó
-  en `chaski-v3` ni en `wasiai-facilitator`. Por eso ambos repos tienen hoy 1 test rojo cada uno (el
-  del hash del sibling), esperado y registrado en `w3/`. El re-pin se hace una sola vez, en la HU de
-  deploy.
+  (medido, `idl-hash.md`). Mientras duró la HU ese número vivió sólo en su carpeta (CD-17) y por eso
+  los dos consumidores tuvieron 1 test rojo cada uno, esperado y registrado en `w3/`.
+
+**Después del cierre, el 2026-08-05.** La rama se mergeó a `main` (`6b0bd67`) y se desplegó: devnet
+pasó del slot `480496830` al `481495859`, firma
+`UjFgwnmUviG9kRVfCNB1kcKeGQAYxsJkZpKQHycM8o6KFFJhDETfzAQyjccQbXd8TgcasN7gyHazjfWhQudjK7F`. El IDL se
+republicó en `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC` por el camino del buffer, y `bfbdfe5a…`
+quedó re-clavado en `chaski-v3` (`bd85dfa`) y `wasiai-facilitator` (`f9bddce`), los dos verdes. Los
+dos hashes del binario (`59ec1098…` con el relleno de la cuenta, `455e4e36…` sin él) están en
+`.github/workflows/verified-build.yml` y en el README. Detalle y verificación en
+[`idl-hash.md`](003-wkh-326-cap-del-indice-liberado-en-close/idl-hash.md), sección de cierre.
 
 ## Contexto del proyecto
 

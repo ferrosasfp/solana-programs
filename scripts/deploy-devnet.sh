@@ -16,7 +16,81 @@ PROGRAM_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["a
   "${REPO_ROOT}/target/idl/escrow.json")"
 
 # ---------------------------------------------------------------------------
-# PREFLIGHT: does the binary still fit in the account it is going to be written into?
+# PREFLIGHT 1: which key signs this? It has to be said out loud, and it has to be the right one.
+# ---------------------------------------------------------------------------
+#
+# `anchor deploy --provider.cluster devnet` pins the network and NOT the wallet, so Anchor falls
+# back to `wallet` in Anchor.toml, which is `~/.config/solana/id.json`. That default has two ways
+# of going wrong and neither of them says what happened:
+#
+#   - the file does not exist. The deploy dies with `Unable to read keypair file` AFTER the size
+#     preflight passed, which reads like the preflight broke something. That is exactly what
+#     happened on 2026-08-05 and it cost a round trip.
+#   - the file exists and holds a DIFFERENT key. Worse: the whole binary is uploaded and the
+#     upgrade then fails inside the loader for lack of authority, an error that never mentions the
+#     wallet. And any command in this script that signs would be signing with whoever that is.
+#
+# So the keypair is an input, not a default. Pass it as the first argument or in DEPLOY_KEYPAIR.
+# Everything below is read only and runs before a single byte is sent to the cluster.
+DEPLOY_KEYPAIR="${1:-${DEPLOY_KEYPAIR:-}}"
+
+die() {
+  echo "" >&2
+  echo "FAIL $*" >&2
+  exit 1
+}
+
+# Read the authority off the chain instead of hardcoding it here: a hardcoded copy is one more
+# thing that can silently go stale after an authority transfer, and the point of this check is to
+# be right about who the chain accepts.
+echo "==> reading the upgrade authority the chain expects"
+ONCHAIN_AUTHORITY="$(python3 "${REPO_ROOT}/scripts/onchain-hash.py" \
+  --program-id "${PROGRAM_ID}" --url devnet | awk '/^upgrade authority/ {print $3}')" \
+  || die "could not read ${PROGRAM_ID} from devnet. Nothing was sent. Check the network and retry."
+
+case "${ONCHAIN_AUTHORITY}" in
+  "" | none)
+    die "devnet reports no upgrade authority for ${PROGRAM_ID} (immutable, or the account layout
+     changed). This script cannot upgrade it and nothing was sent."
+    ;;
+esac
+echo "    upgrade authority      ${ONCHAIN_AUTHORITY}"
+
+if [ -z "${DEPLOY_KEYPAIR}" ]; then
+  die "no keypair given, and this script will not fall back to ~/.config/solana/id.json.
+
+     Usage:  ./scripts/deploy-devnet.sh <path to the upgrade authority keypair>
+             DEPLOY_KEYPAIR=<path> ./scripts/deploy-devnet.sh
+
+     The key devnet expects for ${PROGRAM_ID} is
+     ${ONCHAIN_AUTHORITY}
+     Nothing was sent to the cluster."
+fi
+
+[ -f "${DEPLOY_KEYPAIR}" ] || die "keypair file not found: ${DEPLOY_KEYPAIR}
+
+     The key devnet expects for ${PROGRAM_ID} is
+     ${ONCHAIN_AUTHORITY}
+     Nothing was sent to the cluster."
+
+DEPLOY_PUBKEY="$(solana address -k "${DEPLOY_KEYPAIR}")" \
+  || die "could not read a public key out of ${DEPLOY_KEYPAIR}. Nothing was sent."
+
+if [ "${DEPLOY_PUBKEY}" != "${ONCHAIN_AUTHORITY}" ]; then
+  die "the keypair given is NOT the upgrade authority of ${PROGRAM_ID}.
+
+     keypair ${DEPLOY_KEYPAIR}
+       is    ${DEPLOY_PUBKEY}
+     chain expects
+             ${ONCHAIN_AUTHORITY}
+
+     Deploying with it would upload the whole binary and then fail inside the loader with an
+     error that does not name the wallet. Nothing was sent to the cluster."
+fi
+echo "    signing with           ${DEPLOY_PUBKEY} (matches the chain)"
+
+# ---------------------------------------------------------------------------
+# PREFLIGHT 2: does the binary still fit in the account it is going to be written into?
 # ---------------------------------------------------------------------------
 #
 # `anchor deploy` writes into the ProgramData account that already exists on chain. That account
@@ -43,4 +117,6 @@ python3 "${REPO_ROOT}/scripts/programdata-capacity.py" \
 # ---------------------------------------------------------------------------
 
 solana config set --url devnet
-anchor deploy --provider.cluster devnet
+# Both providers are pinned on the command line. The cluster so an ambient CLI config cannot
+# redirect the deploy, the wallet so Anchor.toml's default cannot decide who signs it.
+anchor deploy --provider.cluster devnet --provider.wallet "${DEPLOY_KEYPAIR}"

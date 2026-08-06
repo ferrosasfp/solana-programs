@@ -38,15 +38,16 @@ env:
   # reproduce it. It is still pinned here because it describes the account and a
   # redeploy moves it, but it is compared only against the chain, never against a
   # rebuild. See README.md, Reproducing the deployed binary.
-  EXPECTED_ARTIFACT_SHA256: "c067878e8a2a0cae2ca61f8c13c4d0eabd9465025ac353de74ff859b2a465cfc"
+  EXPECTED_ARTIFACT_SHA256: "59ec1098cd64d04cab1063fd837e84a70c7962741a3c14932d249cab28b328ef"
   # sha256 over the same bytes with trailing zero padding removed, which is the
   # convention solana-verify uses. This is the value a rebuild can reproduce, so
   # it carries the byte-for-byte claim on its own now.
-  EXPECTED_VERIFY_HASH: "9d9c0679c3496d09e0d2e067b0e7a63002bf435ddff6256837b9114949f464f1"
+  EXPECTED_VERIFY_HASH: "455e4e36fa7c63be568d470a89f7eded9aff5806b198340936a578810be09291"
   # Does the source in this repository still build the bytes that are deployed?
   #
-  # "true" since 2026-08-01: the custody window was deployed in slot 480496830 and
-  # the source is no longer ahead of the chain.
+  # "true" since 2026-08-01 and re-confirmed on 2026-08-05: WKH-326 was deployed
+  # in slot 481495859, the two hashes above were re-read from the chain in the
+  # same commit, and the source is not ahead of the chain.
   #
   # This is NOT a switch that silences the job. With "false" the job REQUIRES the
   # rebuild to differ from the chain, so a deploy that lands without flipping this

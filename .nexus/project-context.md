@@ -28,7 +28,7 @@ Es la mitad on-chain de un sistema más grande; acá viven el programa, sus test
 
 Las cuatro versiones de la tabla de arriba se mueven **juntas** (`rust-toolchain.toml`, `Cargo.toml`,
 los dos workflows, y la tabla "Toolchain" del README). Un desajuste no rompe el build: rompe la
-reproducibilidad, que es una falla más silenciosa (README.md:787-789).
+reproducibilidad, que es una falla más silenciosa (README.md:795-797).
 
 ## Estructura
 
@@ -60,17 +60,17 @@ anchor test --skip-build --skip-deploy --skip-local-validator
 cargo clippy --all-targets -- -D warnings
 ```
 
-Última corrida medida: **43 passing**, ~3 s (README.md:746).
+Última corrida medida: **55 passing**, ~4 s (README.md:769).
 
 `cargo fmt` **no** corre y **no** está enforced: el árbol no pasa `cargo fmt --all -- --check` hoy
-(README.md:872-877). No reformatear el programa como efecto colateral de otra HU.
+(README.md:903-908). No reformatear el programa como efecto colateral de otra HU.
 
 ## Trampas conocidas del repo (esto es lo que muerde)
 
 1. **`anchor deploy` y bankrun shippean lo que está en `target/deploy/`, no compilan.** Restaurar
    el fuente sin rebuildear deja un binario mutado corriendo y la suite reporta fallas que no tienen
    nada que ver con el código en disco. Este repo se comió esto dos veces
-   (README.md:774-777, `doc/mutation-run.md:9-15`). **Rebuildear siempre antes de correr la suite.**
+   (README.md:782-785, `doc/mutation-run.md:9-15`). **Rebuildear siempre antes de correr la suite.**
 2. **Los `///` y `//!` viajan al IDL y le mueven el sha256 canónico.** Los `//` no. Está medido en
    las dos direcciones (README.md:32). Hay tres doc comments hoy que dicen cosas falsas y se
    corrigieron con `//` adyacentes en vez de editarlos, justamente por esto.
@@ -82,7 +82,7 @@ cargo clippy --all-targets -- -D warnings
    `escrow-window.ts` E1b es el alambre (`programs/escrow/src/lib.rs:438-444`).
 5. **El layout de `EscrowState` está congelado.** Agregar un campo mantiene el discriminador y rompe
    el borsh de toda cuenta ya en cadena: `release`/`refund`/`close` empezarían a fallar con
-   `AccountDidNotDeserialize` (README.md:374-380). `escrow.ts` 1a asertea los 154 bytes.
+   `AccountDidNotDeserialize` (README.md:381-387). `escrow.ts` 1a asertea los 154 bytes.
 6. **bankrun deduplica txs por firma.** Un retry de una tx de forma idéntica "pasa" sin ejecutarse si
    no se avanza el slot. Ver `bumpSlot()` en `tests/escrow-index.ts:309-312` (CD-12).
 7. **El compute de `deposit + register_escrow` NO es una constante**: 52.826..79.826 CU sobre 28
@@ -91,7 +91,14 @@ cargo clippy --all-targets -- -D warnings
    muestra.
 8. **El ProgramData no crece solo.** Un upgrade que no entra falla adentro del loader sin mencionar
    el tamaño, después de subir el binario entero. Por eso el deploy corre
-   `programdata-capacity.py` primero (README.md:938-964).
+   `programdata-capacity.py` primero (README.md:970-996).
+9. **`--provider.cluster` fija la red y NO la billetera.** Anchor cae al `wallet` de `Anchor.toml`
+   (`~/.config/solana/id.json`), que el 2026-08-05 no existía: el deploy murió con
+   `Unable to read keypair file` *después* del preflight y costó una vuelta. Si el archivo hubiera
+   existido con otra llave adentro habría subido el binario entero para morir adentro del loader por
+   autoridad inválida. `scripts/deploy-devnet.sh` ahora exige la llave por argumento o
+   `DEPLOY_KEYPAIR`, lee la upgrade authority de la cadena y aborta antes de mandar nada si no
+   coinciden.
 
 ## Convenciones que el repo ya impone
 
@@ -101,7 +108,7 @@ cargo clippy --all-targets -- -D warnings
   (`tests/escrow-index.ts:328-350`).
 - **`escrow-window.ts` re-declara las constantes del programa como literales propios** en vez de
   importarlas, a propósito: un test que le pregunta al programa su propio número sigue pasando
-  después de que alguien lo divida por diez (README.md:755-757).
+  después de que alguien lo divida por diez (README.md:763-765).
 - **Cada guard nuevo se rompe a propósito y se registra en `doc/mutation-run.md`** con qué test lo
   mató. Un guard sin mutante no cuenta como probado acá.
 - **Las listas blancas se escriben como listas blancas, no como negaciones** (`is_terminal()`,
@@ -116,8 +123,10 @@ cargo clippy --all-targets -- -D warnings
 | `chaski-v3` | arma **sólo** `deposit` (partial-signed por la wallet) | `src/infrastructure/solana-wallet.ts:315-322` |
 | `wasiai-facilitator` | firma `release` y lee `EscrowState` | `src/chains/solana-escrow.ts` |
 
-Los dos vendorean el IDL y **pinnean su sha256 canónico**, hoy
-`fb64c937dbdab7a58045e663a85724808c4539707fedbdf244e11a28dbe5c071`:
+Los dos vendorean el IDL y **pinnean su sha256 canónico**, desde el re-pin del 2026-08-05
+(`chaski-v3` `bd85dfa`, `wasiai-facilitator` `f9bddce`)
+`bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, que es el mismo que devuelve
+`anchor idl fetch` y el que construye este árbol (el anterior era `fb64c937…`):
 
 - `chaski-v3/contracts/idl/escrow-idl.hash.test.ts:22` + `chaski-v3/contracts/CONTRACT-VERSIONS.md`
   (hay un test que exige que el doc publique exactamente la constante, `:107-142`)
@@ -133,12 +142,12 @@ escriben desde acá.
 
 | Workflow | Qué hace | Estado |
 |---|---|---|
-| `.github/workflows/ci.yml` | clippy `-D warnings`, `anchor build`, las 43 pruebas | verde |
+| `.github/workflows/ci.yml` | clippy `-D warnings`, `anchor build`, las 55 pruebas | verde |
 | `.github/workflows/verified-build.yml` | rebuild en el contenedor pinneado + compara contra devnet | verde |
 
 `verified-build.yml` tiene una bandera declarada, `SOURCE_REPRODUCES_CHAIN`, hoy en `true`. **No es
 un mute switch**: en `false` el job *exige* que el rebuild difiera de devnet, así que desplegar y
-olvidarse de moverla pone la corrida en rojo en vez de pasarla en silencio (README.md:814-829).
+olvidarse de moverla pone la corrida en rojo en vez de pasarla en silencio (README.md:822-837).
 
 ## Golden path
 
