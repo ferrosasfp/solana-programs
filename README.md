@@ -210,8 +210,11 @@ for this repository: Anchor 1.x does not depend on `solana-program`, so the lock
 `solana-program-error 3.0.1` and the tool would build with the 3.0.1 image. The deployed bytes
 came out of Agave 3.1.10, a different platform-tools, so the comparison would fail for a reason
 that has nothing to do with the source. The key is set to `3.1.10`
-([`Cargo.toml:20`](Cargo.toml#L20)) and has to move together with `rust-toolchain.toml`, the
-workflows, and the Toolchain table below.
+([`Cargo.toml:20`](Cargo.toml#L20)). It is the one version in this repository that a rebuild
+cannot survive being wrong about, so moving it means redeploying and republishing the hashes. The
+workflows and the Toolchain table below have to follow it, and `rust-toolchain.toml` does not:
+that file pins the host compiler, which was measured not to change the artifact. See the
+Toolchain table for the measurement.
 
 ## Flow
 
@@ -801,15 +804,27 @@ and the next suite run reported failures that had nothing to do with the code on
 
 ## Toolchain
 
-| Tool | Version |
-|------|---------|
-| rustc | 1.89.0, pinned by `rust-toolchain.toml` |
-| solana-cli (Agave) | 3.1.10, declared in `[workspace.metadata.cli]` so `solana-verify` picks the matching build image |
-| anchor-cli | 1.1.2 |
+| Tool | Version | Compiles the deployed binary? |
+|------|---------|-------------------------------|
+| rustc, host | 1.89.0, pinned by `rust-toolchain.toml` | No. It runs clippy and the host side tests |
+| rustc, platform-tools | 1.89.0-dev, LLVM 20.1.7, shipped inside Agave 3.1.10 | **Yes.** `cargo-build-sbf` overrides `rust-toolchain.toml` with a `+solana` rustup override |
+| solana-cli (Agave) | 3.1.10, declared in `[workspace.metadata.cli]` so `solana-verify` picks the matching build image | It selects the row above, so moving it moves the bytes |
+| anchor-cli | 1.1.2, in `Anchor.toml:4` and `ci.yml:15` | It drives the build, it is not the compiler |
 
-These versions appear in `rust-toolchain.toml`, `Cargo.toml`, both workflows and this table. They
-have to be changed together. A mismatch does not break the build, it breaks the reproduction,
-which is a quieter failure.
+The host pin and the compiler that produces `escrow.so` are two different things, and only one of
+them can change the artifact. Measured on 2026-08-06 rather than assumed: with
+`target/sbpf-solana-solana` deleted, `anchor build` was run twice, once with
+`channel = "1.89.0"` and once with `channel = "stable"` (rustc 1.97.1). Both runs produced
+`escrow.so` with `sha256` `10d6dd04...` and `verify-hash` `455e4e36...`, the value devnet holds.
+So a `rust-toolchain.toml` that disagrees with this table does **not** break the reproduction. It
+breaks the MSRV check: 1.89.0 is what makes `rust-version = "1.89.0"` in `Cargo.toml` a claim
+clippy actually compiles, and a newer channel can also fail `-D warnings` on lints that did not
+exist in 1.89.0.
+
+What does break the reproduction is `[workspace.metadata.cli] solana`, because it picks the
+platform-tools that emit the bytes. `README.md:196` is the same fact seen from the artifact: the
+only absolute paths embedded in `escrow.so` come from `platform-tools/.../out/rust/library/`,
+never from the host toolchain directory.
 
 ## Continuous integration
 
@@ -897,8 +912,10 @@ It was red for a while, and not because of the program: the workflow used to bui
 from its repository HEAD, and one of the CLI's own transitive dependencies raised its minimum
 supported rustc above the 1.89.0 this repository pins. The job died installing the tool, before it
 ever reached `anchor build`. The fix was to install the CLI from crates.io at the exact pinned
-version with `--locked`, and to give that one binary a separate modern host toolchain. The program
-is still compiled with 1.89.0, because `rust-toolchain.toml` applies inside the checkout.
+version with `--locked`, and to give that one binary a separate modern host toolchain. That second
+toolchain cannot leak into the artifact: `cargo +stable` is scoped to the install command, and the
+`.so` is emitted by the platform-tools rustc either way (see the Toolchain table). What the
+1.89.0 checkout override still buys is the clippy run on the declared MSRV.
 
 **Lints.** `cargo clippy --all-targets -- -D warnings` now runs before anything else, and the
 tree passes it. `cargo fmt` does **not** run and is not enforced: the program does not currently

@@ -1,3 +1,33 @@
+# The host toolchain, and only the host toolchain.
+#
+# `rustc --version` reports 1.89.0 inside this checkout and whatever the machine
+# has outside it (1.97.1 on the developer machine as of 2026-08-06). That gap is
+# this file working, not drift: `rustup show` says the active toolchain is
+# "overridden by '<repo>/rust-toolchain.toml'".
+#
+# What the channel below actually governs:
+#   - `cargo clippy --all-targets -- -D warnings` (.github/workflows/ci.yml:36)
+#   - the host-side test build (`target/debug`)
+#   - anything else run as plain `cargo` from inside the checkout
+# Keeping it at 1.89.0 is what makes `rust-version = "1.89.0"` in Cargo.toml a
+# checked claim instead of a comment: clippy compiles the tree on the exact MSRV
+# the manifest declares.
+#
+# What it does NOT govern: the deployed binary. `cargo-build-sbf` overrides this
+# file with a `+solana` rustup override and compiles `target/deploy/escrow.so`
+# with the rustc shipped inside platform-tools (`rustup toolchain list -v` ->
+# `1.89.0-sbpf-solana-v1.52` -> .../releases/3.1.10/solana-release/bin/
+# platform-tools-sdk/sbf/dependencies/platform-tools/rust, rustc 1.89.0-dev,
+# LLVM 20.1.7). That compiler is selected by the Agave version, which is pinned
+# in Cargo.toml `[workspace.metadata.cli] solana = "3.1.10"`.
+#
+# Measured on 2026-08-06, since a wrong guess here would be a false claim about
+# a verified build: with `target/sbpf-solana-solana` deleted, `anchor build` was
+# run twice, once with `channel = "1.89.0"` and once with `channel = "stable"`
+# (rustc 1.97.1). Both produced escrow.so with sha256 10d6dd04...adf7 and
+# verify-hash 455e4e36...9291, which is the value devnet holds for
+# DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x at slot 481495859. Changing this
+# channel did not move the artifact. Changing the Agave version would.
 [toolchain]
 channel = "1.89.0"
 components = ["rustfmt","clippy"]
