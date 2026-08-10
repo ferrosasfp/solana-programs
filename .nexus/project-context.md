@@ -60,7 +60,10 @@ anchor test --skip-build --skip-deploy --skip-local-validator
 cargo clippy --all-targets -- -D warnings
 ```
 
-Última corrida medida: **55 passing**, ~4 s (README.md:769).
+Última corrida medida: la cifra vive en el renglón "Last measured run" de la sección
+"Running the tests" del README. Se cita por **título de sección** y no por número de línea a
+propósito: la cita anterior decía `README.md:769` y ya estaba corrida (el texto estaba en `:772`),
+porque un número de línea se desplaza cuando alguien edita tres líneas más arriba y un ancla no.
 
 `cargo fmt` **no** corre y **no** está enforced: el árbol no pasa `cargo fmt --all -- --check` hoy
 (README.md:903-908). No reformatear el programa como efecto colateral de otra HU.
@@ -142,8 +145,8 @@ escriben desde acá.
 
 | Workflow | Qué hace | Estado |
 |---|---|---|
-| `.github/workflows/ci.yml` | clippy `-D warnings`, `anchor build`, las 55 pruebas | verde |
-| `.github/workflows/verified-build.yml` | rebuild en el contenedor pinneado + compara contra devnet | verde |
+| `.github/workflows/ci.yml` | clippy `-D warnings`, `anchor build`, la suite completa de pruebas | verde |
+| `.github/workflows/verified-build.yml` | rebuild en el contenedor pinneado + compara contra devnet | **rojo esperado** mientras el árbol lleve WKH-343 sin desplegar: el rebuild ya no reproduce devnet, y eso es el job funcionando |
 
 `verified-build.yml` tiene una bandera declarada, `SOURCE_REPRODUCES_CHAIN`, hoy en `true`. **No es
 un mute switch**: en `false` el job *exige* que el rebuild difiera de devnet, así que desplegar y

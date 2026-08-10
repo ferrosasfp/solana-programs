@@ -88,23 +88,38 @@ The classes of bug we care most about, in order:
 Read this before deciding whether a finding matters, because some of it is already
 public and none of it is a secret we are keeping.
 
-- **Devnet only.** There is no mainnet deployment. The mint used in testing is one
-  we control. **No real money is at risk right now.**
+- **Devnet only.** There is no mainnet deployment, and **no real money is at risk
+  right now.**
+- **We do NOT control the mint that this program has actually custodied.** The
+  automated tests mint their own synthetic 6-decimal mints, but on devnet the
+  program has held Circle's devnet USDC (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`),
+  whose mint authority (`GrNg1XM2...`) and **freeze authority**
+  (`CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT`) are **not ours** — measured
+  2026-08-10 at slot `482578725`. That covered 100% of the balance this program
+  custodied on that mint. It matters for a finder: a freeze authority we do not
+  hold can freeze a vault, and a frozen SPL token account rejects every transfer,
+  so neither `release` nor `refund` can move a token regardless of deadline,
+  signature or state. That is a real custody limitation, not a hypothetical.
 - **No external audit.** The program has never been reviewed by a third party
   security firm. `auditors: "None"` is in the on-chain contact card for that reason.
 - **The upgrade authority exists and is a single devnet key**
   (`4wPhH4dCndAEbdKJS3TC3JF6eeNfC4JrVej4DoYd54jH`). Whoever holds it can replace
   every guarantee the program makes. It has not been revoked and we are not
   claiming immutability.
-- **The source and the chain agree today, and that can change without warning.**
-  This tree was last deployed to devnet on 2026-08-05, in slot `481495859`, and
-  the README publishes the hashes of those bytes. But the upgrade
-  authority above can replace the program at any moment, so a finding against
-  `main` is not automatically a finding against the deployed bytes. Say which one
-  you tested; if you are not sure, say that instead of guessing. `scripts/onchain-hash.py`
-  tells you what is actually running.
-- **55 tests, behaviour driven.** No fuzzing, no formal verification, no symbolic
-  execution. If your tool found something ours did not, that is expected.
+- **The source and the chain DIVERGE right now, on purpose.** This tree contains a
+  change to `programs/escrow/src/lib.rs` (WKH-343: `deposit` now requires the
+  beneficiary's associated token account for the escrow's mint) that **has not been
+  deployed**. The bytes running on devnet are still the ones deployed on 2026-08-05
+  in slot `481495859`, whose hashes the README publishes. The deploy is a separate,
+  later step with its own gate, and until it happens a rebuild of this tree will
+  **not** reproduce the deployed binary. Independently of that, the upgrade
+  authority above can replace the program at any moment. So a finding against
+  `main` is not automatically a finding against the deployed bytes: say which one
+  you tested, and if you are not sure, say that instead of guessing.
+  `scripts/onchain-hash.py` tells you what is actually running.
+- **Behaviour driven tests, no fuzzing**, no formal verification, no symbolic
+  execution. The current count is the one in the README's "Last measured run" row.
+  If your tool found something ours did not, that is expected.
 
 ## On-chain contact
 

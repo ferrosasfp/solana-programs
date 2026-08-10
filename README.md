@@ -22,14 +22,14 @@ This is a project under implementation, not a finished product.
 | | |
 |---|---|
 | Deployed | Solana **devnet** only. No mainnet deployment exists. |
-| Source vs deployed | **They agree.** The last deploy was WKH-326 (`close` releases the escrow's slot in the index), to devnet on 2026-08-05, in slot `481495859`. The hashes in [Deployment](#deployment) were read back from the chain after it and describe a build of this tree. The deploy before it was the custody window (the release deadline, the deposit floor and ceiling, the vault sweep on `close`), on 2026-08-01 in slot `480496830`; ahead of that one the single live escrow that would have lost its release exit was drained and the ProgramData account was extended because the binary no longer fitted, both written up in [Before upgrading the deployed program](#before-upgrading-the-deployed-program). |
-| Money at risk | None. Devnet. Note that the balances custodied today are **not** on the test mint we control: the two escrows still holding funds are on Circle's devnet USDC, which is faucet money and carries a freeze authority that is not ours. Measured 2026-08-05, see [The mint](#the-mint). |
+| Source vs deployed | **They diverge, deliberately, and nothing has been deployed for it.** This tree carries WKH-343: `deposit` now requires the beneficiary's associated token account for the escrow's mint, one extra account at the end of `Deposit`. Rebuilding this tree therefore does **not** reproduce the bytes on devnet, and the `reproducible-build` / `onchain-hash` CI jobs are expected to be red until a deploy happens. That deploy is a separate step with its own gate and **it has not been run**: it is blocked on the client sending the new account and on the beneficiary in use having that token account, neither of which is true yet (see `doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/runbook-deploy.md`). The last deploy is still WKH-326 (`close` releases the escrow's slot in the index), to devnet on 2026-08-05, in slot `481495859`. The hashes in [Deployment](#deployment) were read back from the chain after it and describe a build of this tree **as it was then**. The deploy before it was the custody window (the release deadline, the deposit floor and ceiling, the vault sweep on `close`), on 2026-08-01 in slot `480496830`; ahead of that one the single live escrow that would have lost its release exit was drained and the ProgramData account was extended because the binary no longer fitted, both written up in [Before upgrading the deployed program](#before-upgrading-the-deployed-program). |
+| Money at risk | None. Devnet. **Nothing is custodied at all right now:** measured 2026-08-10 at slot `482593777`, all 10 `EscrowState` accounts are terminal (6 `Refunded`, 4 `Released`) and **none** is in `Deposited`. The four that had been holding 40,000,000 raw were refunded by the sender on 2026-08-10 (slots `482579398`..`482580179`). When this program does custody something, it is **not** on the test mint we control: those four were on Circle's devnet USDC, which is faucet money and carries a freeze authority that is not ours. See [The mint](#the-mint). Regenerate this row with `python3 scripts/list-live-escrows.py --url devnet --markdown`, which stamps every line with the slot it was measured at. |
 | Upgrade authority | **Present.** The program is deployed under the upgradeable loader and its authority is a single devnet key. See [Upgrade authority](#upgrade-authority). |
 | External audit | **None.** The program has not been reviewed by a third party security firm. |
-| Test coverage | 55 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. On top of those, the custody window was exercised against the deployed program with seven real transactions, including the one that needs a genuinely expired deadline: see [The custody window, exercised against the deployed program](#the-custody-window-exercised-against-the-deployed-program). |
-| CI | **Green.** clippy, `anchor build` and the 55 tests run on every push. See [Continuous integration](#continuous-integration). |
+| Test coverage | 61 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. On top of those, the custody window was exercised against the deployed program with seven real transactions, including the one that needs a genuinely expired deadline: see [The custody window, exercised against the deployed program](#the-custody-window-exercised-against-the-deployed-program). |
+| CI | clippy, `anchor build` and the 61 tests run on every push. See [Continuous integration](#continuous-integration). **Expect `SOURCE_REPRODUCES_CHAIN` to be red** while this tree carries WKH-343 undeployed: the rebuild legitimately no longer matches devnet, which is the job doing its work rather than failing. It goes green again with the deploy, not before. |
 | Reproducible build | **Confirmed for the binary deployed on 2026-08-05.** A GitHub runner rebuilt this tree in the pinned container on the push that carries these hashes ([run 31058371492](https://github.com/ferrosasfp/solana-programs/actions/runs/31058371492), commit `a0f9c27`) and both jobs passed: `reproducible-build` and `onchain-hash`. What that run establishes is that a machine which is not the developer's produced the same bytes that devnet serves. **What it does not establish: nobody outside this project has repeated any of it.** A GitHub runner is not this laptop, but it is still this project's workflow. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
-| On-chain IDL | **Published, and it describes what this tree builds.** Republished on 2026-08-05, right after the WKH-326 program deploy, in the canonical metadata account `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`. `anchor idl fetch` returns it and its canonical sha256 is `bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, which is also what `anchor build` produces here and what both consumers pin (`chaski-v3` `bd85dfa`, `wasiai-facilitator` `f9bddce`). Three copies, one number, each measured on its own rather than copied from the others. The explorer may still not render Anchor IDLs; fetching works regardless. See [Publishing the IDL on chain](doc/publish-idl-onchain.md), including why the documented command fails and what worked instead. **Three doc comments in `lib.rs` are still wrong, and the window to fix them was missed.** They state things that are not true today: the deadline is rejected, not clamped; the mint paragraph cites an off-chain co-signer check that does not exist yet; and the `MAX_ENTRIES` comment says the index only lists escrows in `Deposited`, which it does not, and sizes the constant on that. All three are corrected in adjacent `//` comments rather than by editing the `///` and `//!` themselves, because Anchor copies doc comments into the IDL and editing them moves the canonical sha256 that is published on chain and pinned by both consumers. Measured both ways on `main`: editing the doc comments moves the hash and turns the facilitator's cross-repo test red; adding plain `//` comments moves nothing. The 2026-08-05 republication was the moment when moving that hash would have been free, and **it was not used**: the IDL went on chain with the three wrong doc comments in it. Fixing them now would move the hash a third time and force another republication plus another re-pin in both consumers, so they stay as they are and travel with the next change that moves the hash anyway: the events HU, already queued, which changes the interface. That is the plan, not an excuse, and until it lands the `///` text on chain and in both vendored copies is wrong in those three places while the `//` next to it is right. One nuance, measured 2026-08-05: the third one sits on a `const`, and this IDL has no `constants` section, so that particular doc comment never reaches the IDL and editing it would have been safe. It was corrected with an adjacent `//` anyway, so the file keeps one rule instead of a rule plus an exception every future reader has to re-derive. |
+| On-chain IDL | **Published, and it describes the DEPLOYED binary, which this tree no longer matches.** Republished on 2026-08-05, right after the WKH-326 program deploy, in the canonical metadata account `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`. `anchor idl fetch` returns it, its canonical sha256 is `bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, and that is what both consumers pin (`chaski-v3` `bd85dfa`, `wasiai-facilitator` `f9bddce`). **What changed: it is no longer what `anchor build` produces here.** WKH-343 adds one account to `deposit`, so this tree builds a different IDL with a different canonical hash; the new value is recorded in `doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md` and deliberately **not** copied here or re-pinned anywhere, because re-pinning is each consumer's decision. Both consumers' hash tests are therefore expected to be red, and `chaski-v3` has a second red test: it pins `deposit`'s account list by position. `deposit`'s discriminator and its five args did **not** move, and the new account goes last, so no existing account index shifted. The explorer may still not render Anchor IDLs; fetching works regardless. See [Publishing the IDL on chain](doc/publish-idl-onchain.md), including why the documented command fails and what worked instead. **Two doc comments in `lib.rs` are still wrong; a third was fixed here.** Anchor copies doc comments into the IDL, so editing a `///` or `//!` moves the canonical sha256 — which is why those corrections had been parked in adjacent `//` comments instead. WKH-343 moves that hash anyway, so the window reopened, and it was used for exactly one of them: the mint paragraph, which cited an off-chain co-signer check that does not exist and which this change also contradicts, since `deposit` now enforces a *relational* constraint between the mint and the beneficiary. The other two were deliberately left alone, because a window that is open is not a reason to edit text this change does not touch: "clamped" (the deadline is rejected, not clamped) belongs to another HU and already has its `//` next to it, and the `MAX_ENTRIES` comment sits on a `const` and, measured, this IDL has no `constants` section, so that one never reaches the IDL at all. Until they travel with a change of their own, the `///` text on chain and in both vendored copies is wrong in those two places while the `//` next to it is right. |
 | Known issues | Written down below, **and three of them are about custody**: a mint with a freeze authority can freeze the vault (and the mint holding every custodied unit today has one), the vault's associated token account can be pre-created by a stranger to block a deposit, and past the deadline an escrow whose sender lost their key has no exit at all. See [Known limitations](#known-limitations). |
 
 What we do claim: the custody properties below are enforced by account constraints, and each one
@@ -140,9 +140,13 @@ refused everything would pass all five. E and G prove it also pays out, to the r
 directions of the window.
 
 Nothing was left stranded by that upgrade: `list-live-escrows.py --exit-nonzero-if-blocking` exited
-0 right after it. Run today it exits 1 again, and that is not a regression of the upgrade: a deposit
-made afterwards has since passed its own deadline, so its only remaining exit is the sender's
-refund. Which is the ordinary end state of this design and is written up in
+0 right after it. Measured again on 2026-08-10 at slot `482593777` it exits **0**, because no escrow
+is in `Deposited` at all any more: the four that were past their deadline were refunded by their
+sender that day. Do not read a fixed value into this line — the flag reports the state of devnet at
+the instant it runs, and that state changes without anybody editing this file (measured: four rows
+changed status inside a single session, between slots `482578481` and `482583139`). Run the script;
+do not trust the number written here. An escrow whose deadline has passed having only the sender's
+refund left is the ordinary end state of this design, written up in
 [Known limitations](#known-limitations).
 
 ## Reproducing the deployed binary
@@ -537,13 +541,16 @@ entrapment we know of, and it comes from outside the program: the program cannot
 it or route around it. It sits next to the decision not to pin the mint (see [The mint](#the-mint)):
 choosing the mint is choosing whose freeze authority you are exposed to.
 
-This one is no longer hypothetical, and the number is small enough to state plainly. As of
-2026-08-05 the only two escrows still holding funds on devnet are denominated in Circle's devnet
-USDC, whose freeze authority is `CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT` and is not ours, so
-this limitation covers 100% of the custodied balance. That balance is 15 units of devnet money from
-a faucet, neither vault is frozen (`state: initialized`, read the same day) and the economic
-exposure is zero. What changed is the kind of exposure, not its size. The measurement and the
-commands to repeat it are in [The mint](#the-mint).
+This one is not hypothetical, and it is stated in the past tense on purpose, because the balance it
+described is gone. **When this program last custodied anything, the limitation covered 100% of it.**
+Measured 2026-08-05 at that time: the escrows then holding funds on devnet were denominated in
+Circle's devnet USDC, whose freeze authority is `CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT` and
+is not ours. Those vaults were never frozen (`state: initialized`, read the same day) and the
+economic exposure was zero: faucet money. Measured again 2026-08-10 at slot `482593777`, **nothing
+is custodied**: all 10 `EscrowState` accounts are terminal and none is `Deposited`, so right now the
+limitation covers no balance at all. That is a fact about today's devnet, not a property of the
+design: the exposure returns with the next deposit on a mint whose freeze authority is not ours. The
+measurement and the commands to repeat it are in [The mint](#the-mint).
 
 **The vault's associated token account can be pre-created by a stranger, blocking the deposit.**
 `deposit` creates the vault with `init`, not `init_if_needed`. The address is an associated token
@@ -612,14 +619,16 @@ its upgrade authority could deploy a version that adds an exit. That is not a pr
 design, it is the operational risk in [Upgrade authority](#upgrade-authority); on a deployment where
 that authority has been removed, the dead end is absolute.
 
-One escrow on devnet is in the on-chain half of that state right now, which is the cheapest way to
-see it: `4VopXGzBLyy1LtCm8ms881Vpo45ByApjFoUiZATquLiE`, still `Deposited`, deadline passed on
-2026-08-04, 10 units of Circle's devnet USDC. Its release is already impossible and its only exit is
-a `refund` signed by `4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P`. That key is demonstrably in
-use, since it signed the other live deposit within the last day (the 24 hour ceiling puts a bound on
-when), so this escrow is not stranded. It is what the stranded state looks like from the outside,
-and the only difference between the two is off chain: whether somebody still holds that key.
-`list-live-escrows.py` flags it.
+One escrow on devnet was in the on-chain half of that state, and it is worth keeping as a **historical**
+example because it is the cheapest way to see the shape: `4VopXGzBLyy1LtCm8ms881Vpo45ByApjFoUiZATquLiE`,
+`Deposited` with its deadline passed on 2026-08-04, 10 units of Circle's devnet USDC, whose only exit
+was a `refund` signed by `4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P`. That is exactly what
+happened, and the account no longer exists: measured 2026-08-10 at slot `482578944` it is **absent**,
+and its full history is Deposit (slot `481178461`) → Refund (slot `481455632`) → Close (slot
+`482045751`). So it was never stranded — the key was held and the refund was signed. It is what the
+stranded state looks like from the outside, and the only difference between the two is off chain:
+whether somebody still holds that key. For the live picture, run `list-live-escrows.py`, which flags
+this condition and stamps its output with the slot it read.
 
 **The index still fills up for a sender who does not call `close` with it.**
 `register_escrow` requires the escrow to be `Deposited`, but it checks that once, when the id is
@@ -719,27 +728,52 @@ Two devnet mints show up around this program and they are easy to confuse:
 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | Our own 6 decimal test mint, mint authority `4wPhH4dCndAEbdKJS3TC3JF6eeNfC4JrVej4DoYd54jH`, so we can mint test balances at will. **Freeze authority: none at all** (`freezeAuthority: null`), so no third party can freeze a vault holding it. |
 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | Circle's USDC devnet mint, 6 decimals, mint authority `GrNg1XM2ctzeE2mXxXCfhcTUbejM8Z4z4wNVTy2FjMEz`, which is not ours. **Freeze authority `CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT`, which is not ours either.** |
 
-**Which one the escrow actually holds, read on chain on 2026-08-05.** Of the eight `EscrowState`
-accounts of this program on devnet, six record the test mint and two record Circle's devnet USDC.
-Those two are the only ones still `Deposited`: `4VopXGzBLyy1LtCm8ms881Vpo45ByApjFoUiZATquLiE` with
-10.000000 units and `4YpeqyZXahcBpSzyh2eaTc3dRxbarFgHfUR2QoV7JXJx` with 5.000000. The six on the
-test mint are all terminal. So **every unit this program custodies today is on Circle's mint**, not
-on ours. Until this paragraph was rewritten, this section said the escrow ran on the test mint and
-told the reader not to assume it held Circle's. That stopped being true once deposits started
-arriving on Circle's mint, which came from a different sender (`4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P`)
-than the six on the test mint (`8tJVcM2JehYkyPLHUZ3rxNvhfADaQdHx7xaJw6kS6ux8`), and nothing updated
-the text.
+**Which one the escrow actually holds.** This table is not typed by hand: it is the output of
+`python3 scripts/list-live-escrows.py --url devnet --markdown`, which stamps itself with the slot it
+read, so a refreshed row cannot silently lose its date.
 
-That is not a cosmetic drift, and here is why. [Known limitations](#known-limitations) names a
-mint's freeze authority as the only path to permanent entrapment we know of. Our test mint cannot
-take that path, it has no freeze authority to use. Circle's devnet mint has one and it is not ours,
-so that limitation applies to **100% of the balance custodied right now**, rather than to a
-hypothetical mint someone might use later. What that costs today is nothing: this is devnet, the
-15 units are faucet balances, and neither vault is frozen. The two vaults are
-`CrtFReeHXq24QrNJGpt2szkTWsBx5YcgJTWnWYvCLSxZ` and
-`7wor99nsGcXw8eTsn6F4QdqPX2SjMLdQHwS21XnrUrTT`, and both report `state: initialized`, read the same
-day. The exposure is real in kind and zero in value, and the sentence that told a reader not to
-look here was the actual defect.
+measured 2026-08-10 08:27:25Z at slot `482593777` against https://api.devnet.solana.com
+
+| escrow | status | amount (raw) | mint | beneficiary can receive | exit |
+|---|---|---|---|---|---|
+| `2eWYonV4PjznByNkLu7u8YLvbZcSh37d4QzreqeTVG14` | Refunded | 500000 | test mint | yes | terminal |
+| `2zWkoznm86cqX6bWExsR3Wvw5njffDpxuCJCXTsT7LWb` | Refunded | 5000000 | Circle | **NO** | terminal |
+| `4YRtEL1RGuu5zkSYwMUrkEJajbFLbJFKsojMNEoHxVPo` | Refunded | 1000000 | test mint | yes | terminal |
+| `93ZUG1zdVrUTHv4zuup1wDCPdYrXa8QegU42D4rfzuJL` | Released | 500000 | test mint | yes | terminal |
+| `BSj3YUJUc98w89ckWb96shfRv4sakJuu4BjfKuhmvgdq` | Refunded | 5000000 | Circle | **NO** | terminal |
+| `BmHDdjKLCJXcdzd8CqbHaeRWY9utbviZduXhbnH5Jm9F` | Refunded | 10000000 | test mint | yes | terminal |
+| `Crqz6hQoChPaP3TVPU4H7kbXo4FPUXz3NzriG3JYmWdw` | Refunded | 20000000 | Circle | **NO** | terminal |
+| `DHc1DYrSm2QeWe6txAs5NnDSzKYeXcCC1WUwviHk11oj` | Released | 2000000 | test mint | yes | terminal |
+| `GXY2todK6pJPdT8h1EcRNZgFX7cZXEnDN7L3XSHCHY2J` | Released | 10000000 | test mint | yes | terminal |
+| `HnzegD1fxPNpp7DadNWpStS2a5siSVXVXWV2dykJx3uS` | Refunded | 10000000 | Circle | **NO** | terminal |
+
+Ten `EscrowState` accounts, six on our test mint and four on Circle's, and **all ten are terminal**:
+nothing is custodied at that slot. Two earlier versions of this paragraph counted eight accounts and
+named two of them as the only ones still `Deposited`; those two addresses are now **absent** from the
+chain entirely. This is the clearest case in this repo of a paragraph that goes stale with nobody
+editing it, which is why it is generated now instead of written.
+
+The `beneficiary can receive` column is the WKH-343 check, and it is the useful one: all ten escrows
+share one beneficiary (`Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq`), and that beneficiary has a
+token account for our test mint but **none** for Circle's mint. The four rows on Circle's mint are
+exactly the four deposits that could never be released, because `release` requires that account and
+does not create it.
+
+⚠️ **What that does NOT establish.** The mint and the sender co-vary perfectly: the six rows on our
+mint came from `8tJVcM2JehYkyPLHUZ3rxNvhfADaQdHx7xaJw6kS6ux8` and the four on Circle's from
+`4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P`. With ten rows and that confounding, the data do
+**not** separate "the mint is the problem" from "which client build made the deposit is the problem".
+What *is* measured is that the beneficiary cannot explain it: it is byte for byte the same in all ten
+rows, including the three that were paid. One deposit from the first sender on Circle's mint, or the
+reverse, would separate them; none exists.
+
+That distinction matters because [Known limitations](#known-limitations) names a mint's freeze
+authority as the only path to permanent entrapment we know of. Our test mint has no freeze authority
+to use; Circle's devnet mint has one and it is not ours. When this program last custodied a balance,
+that limitation covered 100% of it. It costs nothing today: devnet, faucet balances, no vault was
+ever frozen (`state: initialized` on both vaults of the day, read 2026-08-05). The exposure is real
+in kind and, right now, zero in value — and it returns with the next deposit, not with an edit to
+this file.
 
 Both facts are one command each:
 
@@ -769,11 +803,11 @@ Tests run on [`anchor-bankrun`](https://github.com/kevinheavey/anchor-bankrun), 
 no local validator, which is what makes deterministic control of the clock possible for the
 deadline cases.
 
-Last measured run: **55 passing**, in about 4 seconds.
+Last measured run: **61 passing**, in about 5 seconds.
 
 | Suite | Tests | What it covers |
 |-------|-------|----------------|
-| `tests/escrow.ts` | 10 | deposit, release, refund, close, the state machine, the 154 byte canary |
+| `tests/escrow.ts` | 16 | deposit, release, refund, close, the state machine, the 154 byte canary, and the WKH-343 group: `deposit` requiring the beneficiary's associated token account, plus the test that shows the limit of that guard |
 | `tests/escrow-index.ts` | 25 | the index, attacker paths, legacy account compatibility, IDL shape, the entry cap, rent and compute cost, and `close` removing its own entry |
 | `tests/escrow-window.ts` | 20 | the custody window floor and ceiling, both edges of the release/refund invariant, the status guard attacked with a refilled vault, the vault sweep, the status byte of accounts already live |
 
@@ -970,14 +1004,20 @@ python3 scripts/list-live-escrows.py --url devnet
 ```
 
 Read only: it signs nothing and sends no transaction. It lists every `EscrowState` account of the
-program, decodes it, and flags the ones that are `Deposited` with an expired deadline. Pass
-`--exit-nonzero-if-blocking` to use it as a gate in a script.
+program, decodes it, and flags two separate conditions: the ones that are `Deposited` with an expired
+deadline, and the ones whose recorded beneficiary has no token account for the escrow's mint. Pass
+`--exit-nonzero-if-blocking` to use the first as a gate in a script (that flag's name is historical;
+see the script's docstring).
 
 For each account it flags, do one of two things, and write down which:
 
-1. **Drain it.** Either the authority releases it (still possible until the upgrade lands) or the
-   sender refunds it. Both are already reachable with the deployed program. Re-run the script and
-   confirm the list is empty.
+1. **Drain it via the exit that is actually legal.** ⚠️ If the deadline has already passed, `release`
+   is **not** an option: since the WKH-326 deploy (2026-08-05, slot `481495859`) `release` past the
+   deadline reverts with `ReleaseWindowClosed`, so sending one is not a recovery, it is a transaction
+   that fails. Past the deadline the only exit is the **sender's `refund`**. Inside the window either
+   works — but if the script says `beneficiary can receive: NO`, a `release` cannot even be built
+   until somebody creates the beneficiary's associated token account for that mint, which is one
+   transaction payable by anyone. Re-run the script and confirm the list is empty.
 2. **Decide the refund is the right outcome**, and record the decision, including who was told.
 
 **What was actually done, on 2026-08-01, before the upgrade.** The script found four `EscrowState`

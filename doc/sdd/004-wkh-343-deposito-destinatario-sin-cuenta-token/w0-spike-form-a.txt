@@ -1,0 +1,119 @@
+# wave:       W0.2
+# pasada:     2
+# fecha:      2026-08-10T08:28Z
+# commit:     8fca47294f6cd8e7ecefd330e278e63078957e26
+# lib.rs md5: 5abd215a2f23b28badcaf3890cd3e505   <- lib.rs CON el spike aplicado
+#                                                  (el original es e21a3f5e7d06ed83869d6a780c6bbe20)
+# baseline:   n/a -- el spike NO corre la suite: la unica pregunta es si compila
+# discriminador: passing + failing = n/a (esta pasada no ejecuta tests)
+#
+# pasada 1 DESCARTADA: se genero con un heredoc sin comillas y bash ejecuto los backticks de la
+# prosa, borrando los nombres de cuenta del propio archivo. Ver auto-blindaje.md, entrada [08:28].
+# Esta pasada 2 se escribio con la herramienta Write. La salida cruda del compilador es la MISMA
+# corrida de build (no se rebuildeo para regenerar el texto): los 3 md5 de abajo lo atestiguan.
+#
+# ===========================================================================
+# W0.2 -- SPIKE: la pregunta y su respuesta
+# ===========================================================================
+#
+# PREGUNTA: "associated_token::authority = <arg de instruccion>" compila en Anchor 1.1.2?
+#
+# RESPUESTA MEDIDA: SI COMPILA.  ==>  FORMA A (1 cuenta nueva, 0 codigos de error nuevos).
+#
+# Cambio minimo aplicado para el spike, y nada mas que eso:
+#   1. #[instruction(remittance_id: [u8; 16])]
+#      ->  #[instruction(remittance_id: [u8; 16], beneficiary: Pubkey)]
+#   2. la cuenta "beneficiary_ata", con associated_token::mint = mint y
+#      associated_token::authority = beneficiary, AL FINAL de la struct, despues de system_program.
+#
+# ---------------------------------------------------------------------------
+# POR QUE ESTA SALIDA DICE "COMPILA" Y NO "FALLA" -- la parte que se puede leer al reves
+# ---------------------------------------------------------------------------
+#
+# La salida cruda de abajo CONTIENE un bloque que parece un error y NO lo es. Dos discriminadores
+# independientes, y el segundo no depende de interpretar texto:
+#
+#   1. TEXTO: no hay ni un "error[E0xxx]" ni un "error:" con un "--> programs/escrow/src/lib.rs:NNN".
+#      Lo unico rojo es "Program ID mismatch detected", que es la advertencia por la llave que el
+#      primer build de este worktree genero en target/ (auto-blindaje, entrada [08:05]).
+#      anchor build la imprime y SIGUE: BUILD_EXIT=0.
+#
+#   2. ARTEFACTO: aparecio "Compiling escrow v0.1.0" y el md5 del .so SE MOVIO. Un cache hit habria
+#      dejado el md5 quieto y NO habria impreso "Compiling".
+#
+#      artefacto                     antes (W0.1)                      despues (spike)
+#      target/deploy/escrow.so       d4b736cf6b9e15421e7cb1d75f3d8e0d  03776e2d98face4ef22fc69885b5af34  MOVIO
+#      target/idl/escrow.json        c8e10be9a38bd96b4f0e2ebb422c0c28  809a69ec4787262784f4b22b531dd0b7  MOVIO
+#      programs/escrow/src/lib.rs    e21a3f5e7d06ed83869d6a780c6bbe20  5abd215a2f23b28badcaf3890cd3e505  MOVIO
+#
+#      Que el .so se mueva es lo que vuelve "compilo" un dato en vez de una lectura. Sin ese control,
+#      "compilo" y "ni intento compilar" dan la misma salida: exit 0 y un "Finished" al final.
+#
+# ---------------------------------------------------------------------------
+# Que confirma esto de lo que el Story File habia LEIDO del generador sin probarlo (§7.1, W0.2)
+# ---------------------------------------------------------------------------
+# La prediccion del Story File era "deberia compilar", derivada de leer:
+#   anchor-syn  1.1.2  codegen/accounts/constraints.rs:1311  emite  let wallet_address = ...key();
+#   anchor-lang 1.1.2  src/lib.rs:545                        tiene  impl Key for Pubkey
+#   los args de #[instruction(...)] estan en scope dentro de try_accounts (el propio archivo ya lo
+#   usa para remittance_id en las seeds, lib.rs:553)
+# Era DERIVADO. Ahora esta MEDIDO. No hace falta la forma B.
+#
+# ---------------------------------------------------------------------------
+# Orden final de cuentas de "deposit" en el IDL del spike
+# ---------------------------------------------------------------------------
+#   0. sender                     writable, signer
+#   1. mint                       docs
+#   2. escrow_state               writable, pda
+#   3. vault                      docs, writable, pda
+#   4. sender_ata                 writable
+#   5. token_program              address
+#   6. associated_token_program   address
+#   7. system_program             address
+#   8. beneficiary_ata            pda          <-- AL FINAL, despues de system_program (§3.3)
+#
+# args (los 5, SIN CAMBIOS -- CD-12): remittance_id [u8;16], beneficiary pubkey, authority pubkey,
+#                                     amount u64, deadline i64
+#
+# ---------------------------------------------------------------------------
+# El bloque "pda" que Anchor emite para beneficiary_ata, y el dato que le sirve a chaski-v3
+# ---------------------------------------------------------------------------
+#   "beneficiary_ata": {
+#     "pda": {
+#       "seeds": [
+#         { "kind": "arg",     "path": "beneficiary" },      <-- SEED 1 = un ARGUMENTO de la ix
+#         { "kind": "const",   "value": [6,221,246,...,169] },   (= el SPL Token program id)
+#         { "kind": "account", "path": "mint" }
+#       ],
+#       "program": { "kind": "const", "value": [140,151,37,...,89] }   (= el ATA program id)
+#     }
+#   }
+#
+# LO IMPORTANTE, y es la razon por la que este bloque se guarda entero: la PRIMERA seed es
+# {"kind": "arg", "path": "beneficiary"}. O sea que la cuenta se deriva de un ARGUMENTO de la
+# instruccion, no de otra cuenta que alguien tenga que pasar. Las otras dos seeds son el token
+# program (constante) y la cuenta "mint", que el cliente YA manda hoy.
+#
+# HIPOTESIS -- todavia NO medida en este archivo: con [features] resolution = true (Anchor.toml:7)
+# eso alcanzaria para que el cliente derive beneficiary_ata solo, y entonces (i) los 4 builders de
+# deposit de los tests no necesitan cambio y (ii) chaski-v3 solo necesita RE-PINNEAR el IDL, sin
+# cambio de codigo.
+#
+# ⛔ NO la escribas como conclusion todavia. La mide W2.3, corriendo la suite. El resultado esta
+#    registrado en idl-hash.md, seccion W2.3.
+# ===========================================================================
+
+=== salida cruda de "anchor build" con el spike aplicado (BUILD_EXIT=0) ===
+
+Program ID mismatch detected for program 'escrow':
+  Keypair file has: 9gSxzEKJb2Qkxvoqnf6bwzRmYPyVCc38ZYBwm8yESshT
+  Source code has:  DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x
+
+Please run 'anchor keys sync' to update the program ID in your source code or use the '--ignore-keys' flag to skip this check.
+   Compiling escrow v0.1.0 (/home/ferdev/.openclaw/workspace/wt-wkh343/programs/escrow)
+    Finished `release` profile [optimized] target(s) in 2.14s
+   Compiling escrow v0.1.0 (/home/ferdev/.openclaw/workspace/wt-wkh343/programs/escrow)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.98s
+     Running unittests src/lib.rs (/home/ferdev/.openclaw/workspace/wt-wkh343/target/debug/deps/escrow-cc6ed295537975bd)
+
+=== fin de la salida cruda: 11 lineas, CERO lineas "error[...]" ===

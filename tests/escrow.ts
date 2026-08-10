@@ -17,6 +17,7 @@ import {
   createInitializeMint2Instruction,
   createAssociatedTokenAccountInstruction,
   createMintToInstruction,
+  createCloseAccountInstruction,
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { assert, expect } from "chai";
@@ -103,15 +104,21 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
     return mintKp.publicKey;
   }
 
-  async function createAta(owner: PublicKey): Promise<PublicKey> {
-    const ata = getAssociatedTokenAddressSync(mint, owner, true);
+  // `mintOverride` is an OPTIONAL TRAILING parameter on purpose: every call site that existed
+  // before WKH-343 keeps working byte for byte, and the second mint the WKH-343 tests need is
+  // reachable without touching any of them (CD-14).
+  async function createAta(
+    owner: PublicKey,
+    mintOverride: PublicKey = mint
+  ): Promise<PublicKey> {
+    const ata = getAssociatedTokenAddressSync(mintOverride, owner, true);
     await processIxs(
       [
         createAssociatedTokenAccountInstruction(
           payer.publicKey,
           ata,
           owner,
-          mint,
+          mintOverride,
           TOKEN_PROGRAM_ID,
           ASSOCIATED_TOKEN_PROGRAM_ID
         ),
@@ -121,11 +128,32 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
     return ata;
   }
 
-  async function mintTo(dest: PublicKey, amount: bigint) {
+  // Closes an SPL token account. Only the account's OWNER can sign this, which is exactly the
+  // point in test 15: the beneficiary can walk away from a mint after the deposit already landed.
+  async function closeAta(ata: PublicKey, owner: Keypair) {
+    await processIxs(
+      [
+        createCloseAccountInstruction(
+          ata,
+          payer.publicKey, // rent destination
+          owner.publicKey,
+          [],
+          TOKEN_PROGRAM_ID
+        ),
+      ],
+      [payer, owner]
+    );
+  }
+
+  async function mintTo(
+    dest: PublicKey,
+    amount: bigint,
+    mintOverride: PublicKey = mint
+  ) {
     await processIxs(
       [
         createMintToInstruction(
-          mint,
+          mintOverride,
           dest,
           payer.publicKey,
           amount,
@@ -143,12 +171,12 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
     return AccountLayout.decode(Buffer.from(acc.data)).amount;
   }
 
-  function pdas(rid: Uint8Array) {
+  function pdas(rid: Uint8Array, mintOverride: PublicKey = mint) {
     const [escrowState] = PublicKey.findProgramAddressSync(
       [Buffer.from("escrow"), sender.publicKey.toBuffer(), Buffer.from(rid)],
       program.programId
     );
-    const vault = getAssociatedTokenAddressSync(mint, escrowState, true);
+    const vault = getAssociatedTokenAddressSync(mintOverride, escrowState, true);
     return { escrowState, vault };
   }
 
@@ -162,13 +190,43 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
     return Object.keys(status)[0];
   }
 
+  // `opts` is an OPTIONAL TRAILING parameter: the 10 call sites that existed before WKH-343 are
+  // byte for byte unchanged (CD-14).
+  //
+  // NOTE, and it is the whole point of W2.3: this builder deliberately does NOT name
+  // `beneficiaryAta` in `accountsPartial`. Anchor's client-side account resolution
+  // (`[features] resolution = true`, Anchor.toml:7) is left to derive it from the IDL `pda` block,
+  // whose first seed is the `beneficiary` INSTRUCTION ARG. Whether that is enough is a MEASUREMENT,
+  // not an assumption, and it is the same measurement that tells chaski-v3 whether it needs a code
+  // change or only a re-pinned IDL. A test that needs a DELIBERATELY WRONG account passes
+  // `beneficiaryAtaOverride` and thereby opts out of the derivation.
   async function deposit(
     remittanceId: Uint8Array,
     amount: bigint,
-    deadline: bigint
+    deadline: bigint,
+    opts: {
+      mintOverride?: PublicKey;
+      senderAtaOverride?: PublicKey;
+      beneficiaryAtaOverride?: PublicKey;
+      extraTrailingAccount?: PublicKey;
+    } = {}
   ) {
-    const { escrowState, vault } = pdas(remittanceId);
-    await program.methods
+    const mintUsed = opts.mintOverride ?? mint;
+    const { escrowState, vault } = pdas(remittanceId, mintUsed);
+    const accounts: Record<string, PublicKey> = {
+      sender: sender.publicKey,
+      mint: mintUsed,
+      escrowState,
+      vault,
+      senderAta: opts.senderAtaOverride ?? senderAta,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+    };
+    if (opts.beneficiaryAtaOverride) {
+      accounts.beneficiaryAta = opts.beneficiaryAtaOverride;
+    }
+    let builder = program.methods
       .deposit(
         Array.from(remittanceId),
         beneficiary.publicKey,
@@ -176,18 +234,20 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
         new anchor.BN(amount.toString()),
         new anchor.BN(deadline.toString())
       )
-      .accountsPartial({
-        sender: sender.publicKey,
-        mint,
-        escrowState,
-        vault,
-        senderAta,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([sender])
-      .rpc();
+      .accountsPartial(accounts);
+    // Mirrors what the real client does today: chaski-v3 appends a Solana-Pay style `reference`
+    // pubkey the program never reads (solana-wallet.ts, remainingAccounts). Test 14 proves an
+    // account past the end of the declared list does not break the instruction.
+    if (opts.extraTrailingAccount) {
+      builder = builder.remainingAccounts([
+        {
+          pubkey: opts.extraTrailingAccount,
+          isSigner: false,
+          isWritable: false,
+        },
+      ]);
+    }
+    await builder.signers([sender]).rpc();
     return { escrowState, vault };
   }
 
@@ -236,6 +296,58 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
       }
     }
     expect(threw, `expected tx to revert with ${code}`).to.equal(true);
+  }
+
+  // Same as expectRevert, PLUS: the failure must be attributed to a specific ACCOUNT.
+  //
+  // Why this exists instead of just reusing expectRevert: `AccountNotInitialized` is error 3012 for
+  // EVERY account in the instruction, so pinning the code alone does not distinguish "the
+  // beneficiary's ATA is missing" from "the sender's ATA is missing". What separates them is the
+  // account NAME, which Anchor attaches via `.with_account_name(...)` in the generated
+  // try_accounts (anchor-syn 1.1.2 codegen/accounts/try_accounts.rs) and the TS client exposes as
+  // `error.origin`.
+  //
+  // `error.origin` is a STRING, not an object: the client assigns `const origin = accountName`
+  // (@coral-xyz/anchor dist/cjs/error.js). `e.error.origin.accountName` would be undefined.
+  //
+  // The log fallback is not defensive padding: in bankrun not every failure arrives as a typed
+  // AnchorError, which is exactly why `expectRevert` above already has two paths.
+  async function expectRevertOnAccount(
+    p: Promise<any>,
+    code: string,
+    accountName: string
+  ) {
+    let threw = false;
+    try {
+      await p;
+    } catch (e: any) {
+      threw = true;
+      const blob =
+        (e.logs ? e.logs.join("\n") : "") +
+        " " +
+        (e.transactionMessage || "") +
+        " " +
+        (e.message || "");
+      if (e instanceof anchor.AnchorError) {
+        expect(e.error.errorCode.code).to.equal(code);
+        expect(
+          e.error.origin,
+          `expected the error to be attributed to account "${accountName}"`
+        ).to.equal(accountName);
+      } else {
+        expect(blob, `error did not contain "${code}": ${blob}`).to.include(
+          code
+        );
+        expect(
+          blob,
+          `error was not attributed to account "${accountName}": ${blob}`
+        ).to.include(`AnchorError caused by account: ${accountName}`);
+      }
+    }
+    expect(
+      threw,
+      `expected tx to revert with ${code} on account ${accountName}`
+    ).to.equal(true);
   }
 
   // ---- setup ---------------------------------------------------------------
@@ -575,5 +687,223 @@ describe("escrow — WasiAI trustless USDC escrow (anchor-bankrun)", () => {
     const id = rid(9);
     const deadline = nowTs + FIXTURE_TTL;
     await expectRevert(deposit(id, 0n, deadline), "ZeroAmount");
+  });
+
+  // ==========================================================================
+  // WKH-343 — deposit must demand the SAME account release will demand
+  // ==========================================================================
+  //
+  // The shape of the incident these tests reproduce, measured on devnet at slot 482579152:
+  // four escrows had EXACTLY ONE transaction each, the Deposit, and no release could ever be
+  // built for them because the recorded beneficiary had no token account for the escrow's mint
+  // (0 token accounts for that mint at slot 482578601).
+  //
+  // ⚠️ These tests reproduce the SHAPE, not the addresses. The mints here are synthetic 6-decimal
+  // mints: Circle's devnet USDC cannot be minted inside bankrun. Two mints, an ATA on only one of
+  // them — that is the shape.
+  //
+  // ⚠️ What these tests do NOT establish, and it must not be compressed away: on devnet the mint
+  // and the sender CO-VARY perfectly (the 6 rows on our mint came from one sender, the 4 rows on
+  // Circle's mint from another), so with n=10 the field data does NOT separate "it is the mint"
+  // from "it is which client build made the deposit". What IS measured is that the BENEFICIARY
+  // cannot explain it: it is byte for byte the same in all 10 rows, including the 3 that got paid.
+
+  // A second synthetic mint, funded for the sender, on which the beneficiary has NO token account.
+  async function secondMintFixture(): Promise<{
+    mintB: PublicKey;
+    senderAtaB: PublicKey;
+  }> {
+    const mintB = await createMint6(payer.publicKey);
+    const senderAtaB = await createAta(sender.publicKey, mintB);
+    await mintTo(senderAtaB, 1_000n * ONE_TOKEN, mintB);
+    return { mintB, senderAtaB };
+  }
+
+  it("10. deposit reverts when the beneficiary has NO token account for the mint; nothing is created and nothing moves (AC-1)", async () => {
+    const { mintB, senderAtaB } = await secondMintFixture();
+    const id = rid(10);
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState, vault } = pdas(id, mintB);
+    const senderBefore = await tokenBalance(senderAtaB);
+
+    await expectRevertOnAccount(
+      deposit(id, DEPOSIT_AMOUNT, deadline, {
+        mintOverride: mintB,
+        senderAtaOverride: senderAtaB,
+      }),
+      "AccountNotInitialized",
+      "beneficiary_ata"
+    );
+
+    // The deposit is rejected BEFORE a single token moves: no escrow_state, no vault, and the
+    // sender's balance is untouched. This is the difference between the guard and `init_if_needed`.
+    expect(await context.banksClient.getAccount(escrowState)).to.equal(null);
+    expect(await context.banksClient.getAccount(vault)).to.equal(null);
+    expect(await tokenBalance(senderAtaB)).to.equal(senderBefore);
+  });
+
+  it("11. deposit reverts when the account passed is the beneficiary's ATA for a DIFFERENT mint (ConstraintAssociated)", async () => {
+    const { mintB, senderAtaB } = await secondMintFixture();
+    const id = rid(21);
+    const deadline = nowTs + FIXTURE_TTL;
+
+    // `beneficiaryAta` is the beneficiary's ATA for the module `mint`, NOT for mintB. The owner
+    // check passes (it really is the beneficiary's) and the ADDRESS check is what rejects it.
+    await expectRevertOnAccount(
+      deposit(id, DEPOSIT_AMOUNT, deadline, {
+        mintOverride: mintB,
+        senderAtaOverride: senderAtaB,
+        beneficiaryAtaOverride: beneficiaryAta,
+      }),
+      "ConstraintAssociated",
+      "beneficiary_ata"
+    );
+
+    expect(await context.banksClient.getAccount(pdas(id, mintB).escrowState)).to.equal(null);
+  });
+
+  it("12. deposit reverts when the account passed holds the right mint but belongs to SOMEBODY ELSE (ConstraintTokenOwner)", async () => {
+    const { mintB, senderAtaB } = await secondMintFixture();
+    const attackerAtaB = await createAta(attacker.publicKey, mintB);
+    const id = rid(22);
+    const deadline = nowTs + FIXTURE_TTL;
+
+    // Right mint, wrong owner. This is what stops the guard from being satisfied by ANY token
+    // account: it has to belong to the beneficiary that gets written into EscrowState.
+    await expectRevertOnAccount(
+      deposit(id, DEPOSIT_AMOUNT, deadline, {
+        mintOverride: mintB,
+        senderAtaOverride: senderAtaB,
+        beneficiaryAtaOverride: attackerAtaB,
+      }),
+      "ConstraintTokenOwner",
+      "beneficiary_ata"
+    );
+
+    expect(await tokenBalance(attackerAtaB)).to.equal(0n);
+    expect(await context.banksClient.getAccount(pdas(id, mintB).escrowState)).to.equal(null);
+  });
+
+  it("13. regression of the incident, end to end: the rejected deposit becomes payable after ONE transaction", async () => {
+    const { mintB, senderAtaB } = await secondMintFixture();
+    const id = rid(23);
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState, vault } = pdas(id, mintB);
+
+    // ---- half 1: the incident. The beneficiary has an ATA for `mint` and none for mintB. ----
+    await expectRevertOnAccount(
+      deposit(id, DEPOSIT_AMOUNT, deadline, {
+        mintOverride: mintB,
+        senderAtaOverride: senderAtaB,
+      }),
+      "AccountNotInitialized",
+      "beneficiary_ata"
+    );
+    expect(await context.banksClient.getAccount(escrowState)).to.equal(null);
+
+    // ---- the remedy, and the point of this test: it is ONE transaction, by anyone who pays ----
+    const beneficiaryAtaB = await createAta(beneficiary.publicKey, mintB);
+
+    // ---- half 2: the SAME deposit now enters. bumpSlot first, because bankrun dedups an
+    // identical tx by signature and the retry would "pass" without ever executing.
+    await bumpSlot();
+    await deposit(id, DEPOSIT_AMOUNT, deadline, {
+      mintOverride: mintB,
+      senderAtaOverride: senderAtaB,
+    });
+    expect(await tokenBalance(vault)).to.equal(DEPOSIT_AMOUNT);
+
+    // ---- and a release inside the deadline pays the exact amount to the beneficiary ----
+    await program.methods
+      .release(Array.from(id))
+      .accountsPartial({
+        authority: authority.publicKey,
+        sender: sender.publicKey,
+        beneficiary: beneficiary.publicKey,
+        mint: mintB,
+        escrowState,
+        vault,
+        beneficiaryAta: beneficiaryAtaB,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      })
+      .signers([authority])
+      .rpc();
+
+    expect(await tokenBalance(beneficiaryAtaB)).to.equal(DEPOSIT_AMOUNT);
+    expect(await tokenBalance(vault)).to.equal(0n);
+    const state = await program.account.escrowState.fetch(escrowState);
+    expect(statusKey(state.status)).to.equal("released");
+  });
+
+  it("14. a deposit carrying one EXTRA account past the end of the declared list still succeeds", async () => {
+    const id = rid(24);
+    const deadline = nowTs + FIXTURE_TTL;
+
+    // This is the mechanism the whole DEPLOY ORDER rests on (and it is why `beneficiary_ata` is
+    // declared LAST, after system_program, breaking the "programs go last" convention on purpose):
+    // Anchor only ever fails for accounts it is MISSING, and surplus accounts land in
+    // `remaining_accounts`, which `Deposit` never reads. So a CLIENT can be updated BEFORE the
+    // program without a window in which deposits fail.
+    //
+    // It is also why the real client's Solana-Pay style `reference` pubkey does not get in the way.
+    const reference = Keypair.generate().publicKey;
+    const { escrowState, vault } = await deposit(id, DEPOSIT_AMOUNT, deadline, {
+      extraTrailingAccount: reference,
+    });
+
+    expect(await tokenBalance(vault)).to.equal(DEPOSIT_AMOUNT);
+    const state = await program.account.escrowState.fetch(escrowState);
+    expect(statusKey(state.status)).to.equal("deposited");
+    expect(state.beneficiary.toBase58()).to.equal(
+      beneficiary.publicKey.toBase58()
+    );
+  });
+
+  it("15. the beneficiary can CLOSE its ATA after a valid deposit, and then release reverts — the LIMIT of this guard", async () => {
+    const id = rid(25);
+    const deadline = nowTs + FIXTURE_TTL;
+    const { escrowState, vault } = await deposit(id, DEPOSIT_AMOUNT, deadline);
+    expect(await tokenBalance(vault)).to.equal(DEPOSIT_AMOUNT);
+
+    // The beneficiary walks away from this mint AFTER the deposit landed. Nobody can stop this:
+    // an SPL CloseAccount on one's own token account is signed by its owner.
+    await closeAta(beneficiaryAta, beneficiary);
+    expect(await context.banksClient.getAccount(beneficiaryAta)).to.equal(null);
+
+    // THIS TEST IS THE HONESTY TEST OF WKH-343. Do not delete it, do not weaken it.
+    // The guard added to `deposit` checks the ATA exists AT DEPOSIT TIME. It therefore BOUNDS the
+    // case "the ATA never existed" and leaves OPEN the case "it existed and was closed". Without
+    // this test, the prose of this HU ("a deposit that cannot be settled is rejected") stops being
+    // falsifiable and starts reading as "this can no longer happen", which is false.
+    //
+    // It also turns a DERIVED claim into a MEASURED one: that `release` fails with
+    // AccountNotInitialized on `beneficiary_ata`. That was never observed on chain — the four
+    // stuck escrows had exactly one transaction each, the Deposit, so no release ever landed.
+    // This test is where that stops being a derivation.
+    await expectRevertOnAccount(
+      program.methods
+        .release(Array.from(id))
+        .accountsPartial({
+          authority: authority.publicKey,
+          sender: sender.publicKey,
+          beneficiary: beneficiary.publicKey,
+          mint,
+          escrowState,
+          vault,
+          beneficiaryAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        })
+        .signers([authority])
+        .rpc(),
+      "AccountNotInitialized",
+      "beneficiary_ata"
+    );
+
+    // The money did not move, and the only remaining exit is the refund path after the deadline.
+    expect(await tokenBalance(vault)).to.equal(DEPOSIT_AMOUNT);
+    const state = await program.account.escrowState.fetch(escrowState);
+    expect(statusKey(state.status)).to.equal("deposited");
   });
 });

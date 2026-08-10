@@ -1,0 +1,208 @@
+# wave:       W3
+# pasada:     2
+# fecha:      2026-08-10T08:27Z
+# commit:     8fca47294f6cd8e7ecefd330e278e63078957e26
+# lib.rs md5: 4904ecc950795662d8c4e7cca262247c
+# baseline:   61 passing, 0 failing (la suite de W2; este archivo no la corre)
+# discriminador: passing + failing = 61
+#
+# pasada 1 DESCARTADA: la primera version del chequeo solo preguntaba por la ATA cuando el escrow
+# estaba en `Deposited`. Al slot 482593585 NO hay ninguno en Deposited (el founder refundeo los 4
+# trabados el 2026-08-10, slots 482579398..482580179), asi que la pregunta no se hacia nunca y el
+# criterio de salida (ii) del Story File era inverificable. Ver auto-blindaje, entrada [08:30].
+#
+# ===========================================================================
+# W3 -- el script, corrido contra devnet, SOLO LECTURA
+# ===========================================================================
+#
+# Comando:  python3 scripts/list-live-escrows.py --url devnet
+# Exit:     0
+# No firma nada, no manda ninguna transaccion, no usa keypair. Stdlib solamente (urllib, json,
+# struct, base64). No se agrego ninguna dependencia.
+#
+# ---------------------------------------------------------------------------
+# Los 3 criterios de salida de §7.4, verificados uno por uno
+# ---------------------------------------------------------------------------
+#
+#  (i)   ningun renglon menciona un upgrade   -> OK. `grep -in upgrade` sobre la salida: 0 hits.
+#        El eje "antes/despues del upgrade" salio del docstring, del veredicto y del bloque de
+#        cierre. El upgrade de WKH-326 aterrizo en el slot 481495859 el 2026-08-05, asi que
+#        "release todavia es posible hasta que el upgrade aterrice" describia un mundo que ya no
+#        existe, y peor: RECOMENDABA una operacion de dinero que hoy revierte.
+#
+#  (ii)  el chequeo de la ATA imprime NO para el mint de Circle  -> OK, en las 4 filas de ese mint.
+#
+#  (iii) la salida trae su slot  -> OK, en 3 lugares distintos (cabecera, "accounts found" y el
+#        bloque de cierre), para que un pegado PARCIAL siga trayendo su slot.
+#
+# ---------------------------------------------------------------------------
+# Lo que la corrida MIDE, y que reproduce §1.1 desde el script en vez de a mano
+# ---------------------------------------------------------------------------
+#
+# Al slot 482593777 (2026-08-10), devnet, 10 cuentas EscrowState:
+#
+#   - las 10 comparten el beneficiario Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq
+#   - 6 sobre el mint nuestro 8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q -> "can receive: yes"
+#   - 4 sobre el mint de Circle 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU -> "can receive: NO"
+#   - 0 en estado Deposited: 6 Refunded y 3 Released y 1 Released (todas terminales)
+#   - 0 refund-only, 0 con beneficiario impagable BLOQUEANTE
+#
+# Los 4 "NO" son exactamente los 4 escrows del incidente. El beneficiario sigue sin tener ninguna
+# token account para el mint de Circle al slot 482593777, o sea que la precondicion del gate de W6
+# (mitad 2) sigue SIN cumplirse.
+#
+# ⚠️ LO QUE ESTO NO PRUEBA, y no se comprime: el mint y el sender CO-VARIAN perfectamente. Las 6
+# filas del mint nuestro son del sender 8tJVcM2Jeh... y las 4 del mint de Circle son del sender
+# 4AvAjtPg1... Con n=10 y esa confusion, los datos NO separan "es el mint" de "es que build de
+# cliente hizo el deposito". Lo que SI esta medido es que el beneficiario no lo explica: es byte a
+# byte el mismo en las 10 filas, incluidas las 3 que cobraron.
+# Lo que los separaria: un deposito del sender 8tJVcM2Jeh... sobre el mint de Circle, o al reves.
+#
+# ⚠️ Y sobre --markdown: NO hace que el README deje de envejecer. El "mutante" que restaura el
+# comportamiento viejo es que nadie corra el comando. Lo que si hace: baja el costo de refrescar a
+# un comando y garantiza que cada linea refrescada traiga su slot. Lo que reinicia el limite:
+# cualquier actividad en devnet -- medido, 4 filas cambiaron de estado entre los slots 482578481 y
+# 482583139 dentro de una misma sesion, y esta corrida ya esta 10.000 slots mas adelante.
+# ===========================================================================
+
+=== salida cruda: python3 scripts/list-live-escrows.py --url devnet ===
+
+cluster        https://api.devnet.solana.com
+program id     DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x
+now            1786350429 (2026-08-10 08:27:09Z) [cluster clock at slot 482593725]
+escrow_state accounts found: 10 (measured at slot 482593725)
+
+escrow        2eWYonV4PjznByNkLu7u8YLvbZcSh37d4QzreqeTVG14
+  status      Refunded
+  amount      500000 (raw, in the mint's smallest unit)
+  mint        8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q
+  sender      8tJVcM2JehYkyPLHUZ3rxNvhfADaQdHx7xaJw6kS6ux8
+  beneficiary Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq
+  authority   9rphjeRUekSbVpDZhzN9roQQmn6yndodRVfiBvyEAGAV
+  deadline    1785610703 (2026-08-01 18:58:23Z) PASSED
+  beneficiary can receive: yes (BQC6fXinyR4KnESJso1oY8nnbQjXjbFAJb221V7UkiVe, balance 12500000)
+  -> terminal, nothing to drain
+
+escrow        2zWkoznm86cqX6bWExsR3Wvw5njffDpxuCJCXTsT7LWb
+  status      Refunded
+  amount      5000000 (raw, in the mint's smallest unit)
+  mint        4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
+  sender      4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P
+  beneficiary Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq
+  authority   9rphjeRUekSbVpDZhzN9roQQmn6yndodRVfiBvyEAGAV
+  deadline    1786295265 (2026-08-09 17:07:45Z) PASSED
+  beneficiary can receive: NO -- beneficiary has NO token account for this mint; release cannot be built (not blocking: this escrow is already terminal)
+  -> terminal, nothing to drain
+
+escrow        4YRtEL1RGuu5zkSYwMUrkEJajbFLbJFKsojMNEoHxVPo
+  status      Refunded
+  amount      1000000 (raw, in the mint's smallest unit)
+  mint        8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q
+  sender      8tJVcM2JehYkyPLHUZ3rxNvhfADaQdHx7xaJw6kS6ux8
+  beneficiary Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq
+  authority   9rphjeRUekSbVpDZhzN9roQQmn6yndodRVfiBvyEAGAV
+  deadline    1785190083 (2026-07-27 22:08:03Z) PASSED
+  beneficiary can receive: yes (BQC6fXinyR4KnESJso1oY8nnbQjXjbFAJb221V7UkiVe, balance 12500000)
+  -> terminal, nothing to drain
+
+escrow        93ZUG1zdVrUTHv4zuup1wDCPdYrXa8QegU42D4rfzuJL
+  status      Released
+  amount      500000 (raw, in the mint's smallest unit)
+  mint        8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q
+  sender      8tJVcM2JehYkyPLHUZ3rxNvhfADaQdHx7xaJw6kS6ux8
+  beneficiary Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq
+  authority   9rphjeRUekSbVpDZhzN9roQQmn6yndodRVfiBvyEAGAV
+  deadline    1785614219 (2026-08-01 19:56:59Z) PASSED
+  beneficiary can receive: yes (BQC6fXinyR4KnESJso1oY8nnbQjXjbFAJb221V7UkiVe, balance 12500000)
+  -> terminal, nothing to drain
+
+escrow        BSj3YUJUc98w89ckWb96shfRv4sakJuu4BjfKuhmvgdq
+  status      Refunded
+  amount      5000000 (raw, in the mint's smallest unit)
+  mint        4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
+  sender      4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P
+  beneficiary Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq
+  authority   9rphjeRUekSbVpDZhzN9roQQmn6yndodRVfiBvyEAGAV
+  deadline    1786181394 (2026-08-08 09:29:54Z) PASSED
+  beneficiary can receive: NO -- beneficiary has NO token account for this mint; release cannot be built (not blocking: this escrow is already terminal)
+  -> terminal, nothing to drain
+
+escrow        BmHDdjKLCJXcdzd8CqbHaeRWY9utbviZduXhbnH5Jm9F
+  status      Refunded
+  amount      10000000 (raw, in the mint's smallest unit)
+  mint        8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q
+  sender      8tJVcM2JehYkyPLHUZ3rxNvhfADaQdHx7xaJw6kS6ux8
+  beneficiary Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq
+  authority   9rphjeRUekSbVpDZhzN9roQQmn6yndodRVfiBvyEAGAV
+  deadline    1784756926 (2026-07-22 21:48:46Z) PASSED
+  beneficiary can receive: yes (BQC6fXinyR4KnESJso1oY8nnbQjXjbFAJb221V7UkiVe, balance 12500000)
+  -> terminal, nothing to drain
+
+escrow        Crqz6hQoChPaP3TVPU4H7kbXo4FPUXz3NzriG3JYmWdw
+  status      Refunded
+  amount      20000000 (raw, in the mint's smallest unit)
+  mint        4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
+  sender      4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P
+  beneficiary Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq
+  authority   9rphjeRUekSbVpDZhzN9roQQmn6yndodRVfiBvyEAGAV
+  deadline    1785965508 (2026-08-05 21:31:48Z) PASSED
+  beneficiary can receive: NO -- beneficiary has NO token account for this mint; release cannot be built (not blocking: this escrow is already terminal)
+  -> terminal, nothing to drain
+
+escrow        DHc1DYrSm2QeWe6txAs5NnDSzKYeXcCC1WUwviHk11oj
+  status      Released
+  amount      2000000 (raw, in the mint's smallest unit)
+  mint        8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q
+  sender      8tJVcM2JehYkyPLHUZ3rxNvhfADaQdHx7xaJw6kS6ux8
+  beneficiary Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq
+  authority   9rphjeRUekSbVpDZhzN9roQQmn6yndodRVfiBvyEAGAV
+  deadline    1785194429 (2026-07-27 23:20:29Z) PASSED
+  beneficiary can receive: yes (BQC6fXinyR4KnESJso1oY8nnbQjXjbFAJb221V7UkiVe, balance 12500000)
+  -> terminal, nothing to drain
+
+escrow        GXY2todK6pJPdT8h1EcRNZgFX7cZXEnDN7L3XSHCHY2J
+  status      Released
+  amount      10000000 (raw, in the mint's smallest unit)
+  mint        8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q
+  sender      8tJVcM2JehYkyPLHUZ3rxNvhfADaQdHx7xaJw6kS6ux8
+  beneficiary Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq
+  authority   9rphjeRUekSbVpDZhzN9roQQmn6yndodRVfiBvyEAGAV
+  deadline    1784745374 (2026-07-22 18:36:14Z) PASSED
+  beneficiary can receive: yes (BQC6fXinyR4KnESJso1oY8nnbQjXjbFAJb221V7UkiVe, balance 12500000)
+  -> terminal, nothing to drain
+
+escrow        HnzegD1fxPNpp7DadNWpStS2a5siSVXVXWV2dykJx3uS
+  status      Refunded
+  amount      10000000 (raw, in the mint's smallest unit)
+  mint        4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
+  sender      4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P
+  beneficiary Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq
+  authority   9rphjeRUekSbVpDZhzN9roQQmn6yndodRVfiBvyEAGAV
+  deadline    1786158747 (2026-08-08 03:12:27Z) PASSED
+  beneficiary can receive: NO -- beneficiary has NO token account for this mint; release cannot be built (not blocking: this escrow is already terminal)
+  -> terminal, nothing to drain
+
+==============================================================================
+measured 2026-08-10 08:27:09Z at slot 482593725 against https://api.devnet.solana.com
+
+No escrow is Deposited with an expired deadline, so no escrow is refund-only today.
+
+
+=== salida cruda: la misma corrida con --markdown ===
+
+measured 2026-08-10 08:27:25Z at slot 482593777 against https://api.devnet.solana.com
+
+| escrow | status | amount (raw) | mint | beneficiary | deadline | beneficiary can receive | exit |
+|---|---|---|---|---|---|---|---|
+| `2eWYonV4PjznByNkLu7u8YLvbZcSh37d4QzreqeTVG14` | Refunded | 500000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-01 18:58:23Z | yes | terminal |
+| `2zWkoznm86cqX6bWExsR3Wvw5njffDpxuCJCXTsT7LWb` | Refunded | 5000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-09 17:07:45Z | **NO** | terminal |
+| `4YRtEL1RGuu5zkSYwMUrkEJajbFLbJFKsojMNEoHxVPo` | Refunded | 1000000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-07-27 22:08:03Z | yes | terminal |
+| `93ZUG1zdVrUTHv4zuup1wDCPdYrXa8QegU42D4rfzuJL` | Released | 500000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-01 19:56:59Z | yes | terminal |
+| `BSj3YUJUc98w89ckWb96shfRv4sakJuu4BjfKuhmvgdq` | Refunded | 5000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-08 09:29:54Z | **NO** | terminal |
+| `BmHDdjKLCJXcdzd8CqbHaeRWY9utbviZduXhbnH5Jm9F` | Refunded | 10000000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-07-22 21:48:46Z | yes | terminal |
+| `Crqz6hQoChPaP3TVPU4H7kbXo4FPUXz3NzriG3JYmWdw` | Refunded | 20000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-05 21:31:48Z | **NO** | terminal |
+| `DHc1DYrSm2QeWe6txAs5NnDSzKYeXcCC1WUwviHk11oj` | Released | 2000000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-07-27 23:20:29Z | yes | terminal |
+| `GXY2todK6pJPdT8h1EcRNZgFX7cZXEnDN7L3XSHCHY2J` | Released | 10000000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-07-22 18:36:14Z | yes | terminal |
+| `HnzegD1fxPNpp7DadNWpStS2a5siSVXVXWV2dykJx3uS` | Refunded | 10000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-08 03:12:27Z | **NO** | terminal |
+
+10 escrow_state account(s) total; 0 refund-only; 0 with an unpayable beneficiary.
