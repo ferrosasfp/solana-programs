@@ -1,0 +1,167 @@
+WKH-343 — fix pack, BLQ-MED-1
+=============================================================================
+"El instrumento del gate no pregunta lo que el programa exige."
+
+Qué se arregló: scripts/list-live-escrows.py preguntaba
+`getTokenAccountsByOwner(beneficiary, {mint})` — un filtro sobre los DATOS de la
+cuenta (owner + mint) — mientras el programa exige la ATA CANONICA, que es una
+condicion sobre la DIRECCION (`associated_token::mint` + `::authority`). Son
+predicados distintos, y el script es el instrumento que runbook-deploy.md:24
+designa para verificar la mitad (ii) del gate, cuyo modo de falla documentado es
+"el programa nuevo rechaza el 100% de los depositos".
+
+Ahora deriva la ATA canonica y exige que la lista la CONTENGA.
+
+Fecha: 2026-08-10. Arbol: feat/004-wkh-343-deposito-destinatario-sin-cuenta-token
+sobre el commit 849c0b5.
+
+-----------------------------------------------------------------------------
+0. CONTROL DE LA DERIVACION — contra una implementacion INDEPENDIENTE
+-----------------------------------------------------------------------------
+La derivacion nueva (canonical_ata / find_program_address / is_on_curve, stdlib
+puro) se comparo contra `getAssociatedTokenAddressSync` de @solana/spl-token
+0.4.15, que es OTRA implementacion, sobre 502 pares (owner, mint): los 2 pares
+reales de devnet + 500 pares aleatorios, que es lo que ejercita el bucle de bump
+y el test de off-curve.
+
+    pairs compared: 502  mismatches: 0
+    b58 roundtrip 200/200 ok
+
+    TOKEN_PROGRAM_ID          TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+    ASSOCIATED_TOKEN_PROGRAM  ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL
+    (las dos constantes del script son iguales a las de la libreria)
+
+    derivadas para el beneficiario Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq:
+      mint nuestro  8yRX3fZ2... -> BQC6fXinyR4KnESJso1oY8nnbQjXjbFAJb221V7UkiVe
+      mint de Circle 4zMMC9sr... -> Cq9AinM9WCry8Pyk5EsFJ2hdQomKAUES7Cq7YLunRGMC
+
+Las dos se confirmaron contra la cadena en el barrido de la seccion 3: la
+primera EXISTE con saldo 12500000 y la segunda NO existe.
+
+-----------------------------------------------------------------------------
+1. LA SONDA: un fixture, dos consumidores, y antes daban respuestas OPUESTAS
+-----------------------------------------------------------------------------
+Parte A — la pregunta del PROGRAMA, en bankrun contra target/deploy/escrow.so
+(el binario NUEVO, el de este arbol; no se desplego nada).
+
+Fixture construido en bankrun, y sus tres premisas se ASERTAN, no se suponen:
+una token account con el mint correcto, el owner correcto y direccion NO
+canonica; la ATA canonica AUSENTE.
+
+    beneficiary   4uywiXoj8C5cYbbpnKqXuzJtNZ258a1akh2YAecgnqEB
+    mint          6APEVshUfLwNe3AWowi7iBNKDJ5Hio2MheaPxetkMXF2
+    canonical ATA 2NNGgS85SGEwqrkFmoBchTJ9tihRSQxLt1E4wg4fuLeu   <- AUSENTE
+    non-canonical B3rsq6tz2ntpF7n3LWwruhtZGuMiMq4kDyNcM7bssFGz   <- EXISTE
+
+    PROGRAM answer     : ConstraintAssociated (2009) on account beneficiary_ata
+    escrow_state after : null
+      (tambien: vault == null)
+    ✔ A. the PROGRAM rejects a right-mint right-owner NON-CANONICAL token account
+    ✔ A2. positive control: the SAME deposit enters once the canonical ATA exists
+         escrow_state bytes : 154
+    2 passing
+
+Esto reproduce de forma independiente lo que midio el AR: el programa rechaza
+esa cuenta con 2009 y NO crea el escrow_state.
+
+Parte B — la pregunta del SCRIPT sobre EL MISMO fixture, con el RPC stubeado
+para servir exactamente ese estado. `old_predicate` es el cuerpo BORRADO copiado
+VERBATIM de `git show`, no una parafrasis.
+
+    0. the derivation agrees with @solana/spl-token on this pair          OK
+
+    1. SCENARIO: canonical ATA absent, non-canonical present  (el input en disputa)
+       OLD predicate (getTokenAccountsByOwner) -> would print   'yes'     OK
+       NEW predicate ok                                          False    OK
+       NEW predicate ata      2NNGgS85SGEwqrkFmoBchTJ9tihRSQxLt1E4wg4fuLeu OK
+       NEW predicate non_canonical count                         1        OK
+       => el programa dice ConstraintAssociated (2009) y el script ahora dice NO.
+          Antes el script decia 'yes'.
+
+    2. CONTROL: canonical ATA present (el programa acepta, el script tambien)
+       OLD predicate -> 'yes'                                             OK
+       NEW predicate ok                                          True     OK
+
+    3. CONTROL: nada para el par
+       NEW predicate ok  False / non_canonical 0                          OK
+
+    4. CONTROL: el exit code ahora cuenta `unpayable`, y antes no
+       exit_code([],  ['x'], flag=True)  -> 1                             OK
+       exit_code([],  ['x'], flag=False) -> 0                             OK
+       exit_code(['y'], [],  flag=True)  -> 1                             OK
+       exit_code([],  [],    flag=True)  -> 0                             OK
+
+    RESULT: ALL CHECKS OK
+
+⚠️ Lo que la parte B NO es: no es una corrida contra un validador. Es el script
+con su `rpc` reemplazado. Lo que mide es el PREDICADO, que es donde estaba el
+defecto; que el script hable bien con un validador real lo mide la seccion 3.
+
+-----------------------------------------------------------------------------
+2. UN ERROR QUE COMETI EN EL CAMINO, y por que quedo escrito
+-----------------------------------------------------------------------------
+La PRIMERA version del arreglo preguntaba DOS cosas por escrow
+(`getAccountInfo` de la ATA derivada + `getTokenAccountsByOwner`). Eso duplico
+las requests y el endpoint publico de devnet contesto **HTTP 429 Too Many
+Requests** a mitad de los 10 escrows, con traceback. Un instrumento de gate que
+muere por la mitad no es mejor que uno que contesta mal.
+
+La version que quedo hace UNA sola llamada: la lista de token accounts del par
+es un superconjunto que ya contiene a la ATA canonica si existe, asi que la
+pregunta correcta es de CONTENCION. Medido, no supuesto (seccion 3).
+
+-----------------------------------------------------------------------------
+3. VOLUMEN DE RPC: identico al de antes. Medido en las DOS versiones
+-----------------------------------------------------------------------------
+Contando las llamadas reales, misma cadena, con 30 s de diferencia. La version
+vieja se saco con `git show HEAD:scripts/list-live-escrows.py` (sin checkout).
+
+    VIEJA (md5 e224c515c94ecac0aa7c25b32e1bf332)   slot 482608248
+      getBlockTime 1 / getProgramAccounts 1 / getSlot 1 / getTokenAccountsByOwner 10
+      TOTAL 13     main() returned 0
+
+    NUEVA (md5 79a7cb2451926e73daa751903fd4e1ff)   slot 482608313
+      getBlockTime 1 / getProgramAccounts 1 / getSlot 1 / getTokenAccountsByOwner 10
+      TOTAL 13     main() returned 0
+
+⛔ ESE md5 NO ES EL DEL ARCHIVO QUE SE ENTREGA, y el aviso vale mas que el numero.
+Lo escribi a mitad de la ronda 1 y segui editando el script **9 segundos** despues,
+asi que a partir de ahi esta seccion describia un archivo que ya no existia. La
+ronda 2 lo cambio bastante mas (memo, reloj, congelada, 5 condiciones de salida).
+Los digests vigentes viven en UN solo lugar, medidos al cierre:
+`fix-pack-round-2.txt`, seccion 9. Un digest en el medio de un documento es una
+afirmacion con fecha de vencimiento; si necesitas comparar, compara contra esa
+seccion o corre `md5sum` vos.
+
+⚠️ Y EL CONTEO DE 13 TAMBIEN QUEDO VIEJO, a proposito: la ronda 2 memoiza por
+`(beneficiary, mint)` y el barrido pasa a **5** llamadas
+(`getTokenAccountsByOwner` 10 -> 2), medido igual, con el mismo contador. Lo que
+esta seccion sigue probando —y es para lo que se escribio— es que el arreglo del
+predicado NO agrego requests: 13 contra 13 sobre la misma cadena. La bajada a 5 es
+de la ronda 2 y esta en `fix-pack-round-2.txt`, seccion 5.
+
+⇒ El 429 que vi antes fue de correr DOS barridos completos seguidos, no del
+cambio: el cambio no agrega ni una request. Y la salida de las dos versiones
+sobre las 10 filas de hoy es identica, que es lo esperado: al slot 482608313
+NINGUNA de las 10 token accounts de estos mints es no canonica, asi que hoy el
+predicado viejo acertaba por casualidad. El fixture de la seccion 1 es
+exactamente el input que rompe esa casualidad.
+
+-----------------------------------------------------------------------------
+4. QUE SIGUE SIN VERIFICAR
+-----------------------------------------------------------------------------
+- El script sigue siendo de SOLO LECTURA y sigue sin poder decir nada sobre el
+  instante del release: una ATA que existe hoy la puede cerrar su dueño mañana
+  (SPL CloseAccount). Acota "nunca existio", no "existia y se cerro".
+- La equivalencia script/programa NO tiene un guardian que corra sola. Esta
+  medida acá, una vez, sobre esta version de las dos piezas. Si alguien cambia
+  `Release.beneficiary_ata` a `token::`, el programa aceptaria cuentas que este
+  script sigue llamando NO, y nada lo avisaria.
+  ⇒ RESUELTO A MEDIAS EN LA RONDA 2: la DERIVACION ya tiene guardian
+  (`scripts/derivation-selftest.py`, cableado en `.github/workflows/ci.yml`, con 6
+  mutantes confirmados en rojo). Lo que sigue SIN guardian es el otro lado: que
+  `Release.beneficiary_ata` conserve `associated_token::`. Eso sigue siendo trabajo
+  de quien revisa.
+- La mitad (ii) del gate de W6 SIGUE SIN CUMPLIRSE: al slot 482608313 la ATA
+  canonica del beneficiario para el mint de Circle
+  (Cq9AinM9WCry8Pyk5EsFJ2hdQomKAUES7Cq7YLunRGMC) NO existe.

@@ -44,7 +44,12 @@
 #   - las 10 comparten el beneficiario Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq
 #   - 6 sobre el mint nuestro 8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q -> "can receive: yes"
 #   - 4 sobre el mint de Circle 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU -> "can receive: NO"
-#   - 0 en estado Deposited: 6 Refunded y 3 Released y 1 Released (todas terminales)
+#   - 0 en estado Deposited: 7 Refunded y 3 Released (todas terminales)
+#
+# ⚠️ CORRECCION DEL FIX PACK (AR-BLQ-BAJO-1): este renglon decia "6 Refunded y 3 Released y 1
+# Released", que suma 10 pero nombra el estado de una fila dos veces. De ese garbleo salio el
+# "6 Refunded, 4 Released" que se publico en README.md. Contando la tabla de la seccion "The mint"
+# del README fila por fila: 7 Refunded y 3 Released. Re-medido al slot 482608313.
 #   - 0 refund-only, 0 con beneficiario impagable BLOQUEANTE
 #
 # Los 4 "NO" son exactamente los 4 escrows del incidente. El beneficiario sigue sin tener ninguna

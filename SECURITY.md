@@ -95,8 +95,15 @@ public and none of it is a secret we are keeping.
   program has held Circle's devnet USDC (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`),
   whose mint authority (`GrNg1XM2...`) and **freeze authority**
   (`CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT`) are **not ours** — measured
-  2026-08-10 at slot `482578725`. That covered 100% of the balance this program
-  custodied on that mint. It matters for a finder: a freeze authority we do not
+  2026-08-10 at slot `482578725`. **When this program last custodied a balance,
+  that limitation covered 100% of it.** (It used to say "100% of the balance this
+  program custodied *on that mint*", which with that qualifier says nothing at all
+  — of course the mint's own freeze authority covers the balance held in that
+  mint. In a document read by whoever is about to report a vulnerability, a "100%"
+  that is a tautology invites the strong reading, and the strong reading would be
+  false. The claim above is the falsifiable one, and it is true: the last balance
+  under custody, the 40,000,000 raw refunded on 2026-08-10, was entirely on
+  Circle's mint.) It matters for a finder: a freeze authority we do not
   hold can freeze a vault, and a frozen SPL token account rejects every transfer,
   so neither `release` nor `refund` can move a token regardless of deadline,
   signature or state. That is a real custody limitation, not a hypothetical.

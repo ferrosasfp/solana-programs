@@ -528,27 +528,35 @@ pub struct Deposit<'info> {
     #[account(mut)]
     pub sender: Signer<'info>,
 
-    // ⚠️ CORRECCION 2026-08-04, ACTUALIZADA POR WKH-343 (2026-08-10).
+    // ⚠️ CORRECCION 2026-08-04, ACTUALIZADA POR WKH-343 (2026-08-10) Y CORREGIDA EN SU FIX PACK.
     // Lo que decía esta nota: que el `///` de abajo justificaba no clavar el mint citando un
-    // co-firmante off-chain que "se niega a firmar un depósito con un mint inesperado", que ese
-    // control NO EXISTE (CR-1 del facilitator nunca compara el mint contra `SOLANA_USDC_MINT`,
-    // aunque sí lo hace en las otras dos rutas del mismo servicio), y que el `///` NO se corregía
-    // porque Anchor lo copia al IDL y eso movería el sha256 canónico publicado en cadena.
-    // QUÉ CAMBIÓ: WKH-343 agrega la cuenta `beneficiary_ata` a esta struct, así que el hash del IDL
-    // se mueve POR CONSTRUCCIÓN y la ventana para corregir el `///` quedó abierta. Se usó, y el
-    // párrafo falso ya no está: el `///` de abajo describe el control que SÍ existe.
-    // QUÉ SIGUE EN PIE, y es refutable con un input concreto: el programa sigue aceptando CUALQUIER
-    // mint y nadie lo filtra aguas arriba. Validar el mint vive en `wasiai-facilitator` y sigue sin
-    // hacerse. El guard que agrega WKH-343 NO es un validador de mint (ver el párrafo de abajo).
+    // co-firmante off-chain que "se niega a firmar un depósito con un mint inesperado", y que ese
+    // control NO EXISTIA.
+    // QUE CAMBIO, y es lo que corrige el fix pack: el control SI EXISTE desde el 2026-08-04.
+    // `wasiai-facilitator/src/methods/solana-sponsor/cr1.ts:281-282` compara el mint del deposito
+    // contra `SOLANA_USDC_MINT` y responde `MINT_MISMATCH`; entro en el commit e14383f (ancestro de
+    // `origin/main`, verificado). Esta nota afirmaba lo contrario y el `///` de abajo tambien: las
+    // dos frases eran FALSAS. Lo que sigue siendo cierto es el ALCANCE, y va escrito abajo: cubre
+    // los depositos que pasan por el patrocinador, y un deposito armado y firmado por fuera no lo
+    // atraviesa.
+    // NO MEDIDO: si el servicio desplegado en produccion corre ese commit. Se leyo el repo, no el
+    // deploy.
+    // POR QUE SE CORRIGIO EL `///` Y NO SE PARQUEO EN UN `//`, que es la practica de este archivo:
+    // porque WKH-343 mueve el sha256 canonico del IDL POR CONSTRUCCION (agrega `beneficiary_ata`),
+    // asi que la ventana esta abierta y corregir cuesta un rebuild. El IDL nuevo NO se publico
+    // todavia: las dos mitades del gate de W6 siguen sin cumplirse (runbook-deploy.md:21-24). Si se
+    // publicara con la frase falsa adentro, quedaria inmortalizada en cadena y corregirla pasaria a
+    // costar un upgrade de IDL. El costo es asimetrico y por eso se corrige ahora.
     /// Acepta CUALQUIER mint, y es una decisión, no un olvido. El programa es infraestructura de
     /// escrow genérica; "qué token vale un dólar" es política de producto y vive aguas arriba, en
     /// el componente que arma el depósito. Clavarlo acá obligaría a dos builds, dos IDL, dos hashes
     /// pinneados y un redespliegue para rotarlo.
     ///
-    /// ⚠️ NO hay hoy ningún control que rechace un mint inesperado. El co-firmante off-chain que
-    /// esta decisión daba por sentado no compara el mint contra nada. Es una ausencia conocida y
-    /// declarada, no un supuesto: el que decide qué mint es aceptable es quien construye la
-    /// transacción, y hoy nadie lo verifica.
+    /// ⚠️ DÓNDE VIVE EL CONTROL, y hasta dónde llega: el co-firmante off-chain compara el mint del
+    /// depósito contra el que tiene configurado y se niega a firmar si no coincide. Ese control
+    /// EXISTE. Lo que no hace es cubrir todos los depósitos: cubre sólo los que pasan por él, y un
+    /// depósito construido y firmado por fuera del patrocinador no lo atraviesa. Para esos, el
+    /// programa acepta cualquier mint y nadie aguas arriba lo filtra.
     ///
     /// LO QUE ESTA STRUCT SÍ EXIGE, y es distinto de clavar el mint: que el mint sea CONSISTENTE
     /// con un beneficiario capaz de recibirlo (ver `beneficiary_ata`, al final de esta struct). Es
@@ -623,6 +631,14 @@ pub struct Deposit<'info> {
     // despues (SPL CloseAccount, la firma su dueño, nadie se lo puede impedir). O sea que ACOTA el
     // caso "nunca existio" y deja ABIERTO "existia y se cerro". El test 15 de tests/escrow.ts ejerce
     // ese caso a proposito, para que el limite quede ejecutable y no sea una nota de prosa.
+    // Y NO es el unico camino que queda abierto al mismo estado trabado, aunque este es PREEXISTENTE:
+    // `beneficiary` entra a `deposit` como arg `Pubkey` sin constraint de tipo (linea 146) y `release`
+    // lo declara `SystemAccount` (Release.beneficiary, mas abajo). Medido en bankrun: con un
+    // `beneficiary` propiedad del SPL Token program y su ATA canonica creada, el DEPOSITO ENTRA y el
+    // release falla SIEMPRE con AccountNotSystemOwned (3011), y solo queda el refund del sender.
+    // No lo introduce ni lo cierra esta HU, y necesita un cliente modificado (chaski-v3 manda la
+    // pubkey de una billetera). Detalle y la corrida:
+    // doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/fix-pack-mnr-2.txt
     //
     // `associated_token::` y no `token::`, y no es intercambiable: `token::` aceptaria cualquier
     // token account del beneficiario con este mint, incluida una que NO es la ATA canonica, y
@@ -631,6 +647,17 @@ pub struct Deposit<'info> {
     // SIN `mut`: en `deposit` no se le transfiere nada a esta cuenta, solo se comprueba que exista.
     // Menos privilegio, y obliga a que alguien agregue el `mut` a mano el dia que quiera mandarle
     // tokens desde aca.
+    // ⛔ Y ANTES DE AGREGARLO, LEER ESTO, porque ese `mut` ROMPE PRODUCCION y esta medido: con `mut`,
+    // esta cuenta viaja writable en el indice 8, que es el primero del `keys.slice(8)` con el que
+    // CR-1 del facilitator exige que todo remaining account sea no-signer y no-writable
+    // (wasiai-facilitator/src/methods/solana-sponsor/cr1.ts:285-288). CR-1 rechazaria el 100% de los
+    // depositos patrocinados con REMAINING_ACCOUNT_FLAGS_INVALID, un enum cuyo nombre apunta al
+    // `reference` y no a esta cuenta, asi que el que lo debuguee va a mirar el lugar equivocado.
+    // Sin `mut`, hoy pasa por dos razones y las dos son fragiles: ese slice y que cr1.ts:220 compare
+    // con `<` en vez de `!==` (con `!==` una cuenta de mas ya seria DEPOSIT_ACCOUNTS_MISSING).
+    // OJO, el mismo rechazo es alcanzable HOY sin tocar nada: si `beneficiary == sender`, entonces
+    // `beneficiary_ata == sender_ata`, que va writable en el indice 4, y los flags se unen por
+    // TRANSACCION, asi que el indice 8 sale writable igual.
     // SIN `init` ni `init_if_needed`, y es una decision, no un olvido: crear la ATA aca completaria
     // un pago del activo equivocado de forma irreversible, y ademas le habria sacado la salida a los
     // 4 depositos trabados del incidente (habrian quedado `Released`, que es terminal, y los 4

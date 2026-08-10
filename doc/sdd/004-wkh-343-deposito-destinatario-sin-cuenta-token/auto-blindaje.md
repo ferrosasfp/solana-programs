@@ -168,3 +168,197 @@ Lo encontré recién en W1, dos waves después, en un `git status --porcelain` *
 - **Aplicar en**: toda HU que agregue líneas a un archivo que otros documentos citan por número. El
   control no es "revisá tu diff": es **re-evaluar las citas contra el árbol final**. Y el arreglo
   duradero no es corregir el número, es **dejar de citar por número** lo que se puede citar por nombre.
+
+---
+
+### [2026-08-10 09:35] Fix pack (AR-BLQ-MED-1) — escribí un chequeo que preguntaba por el CONTENIDO cuando el programa exige la DIRECCIÓN
+
+- **Error**: el chequeo "¿el beneficiario puede recibir?" de `scripts/list-live-escrows.py` lo escribí
+  como `getTokenAccountsByOwner(beneficiary, {mint})`. Ese RPC filtra por los **datos** de la cuenta
+  (owner + mint). El programa exige la **ATA canónica**, que es una condición sobre la **dirección**
+  (`associated_token::`, y el código generado es explícito: `anchor-syn` 1.1.2
+  `codegen/accounts/constraints.rs:1318-1321` deriva `__associated_token_address` y tira
+  `ConstraintAssociated` si `#name.key()` no es esa). **Son predicados distintos**, y difieren en un
+  input concreto: una token account con el mint correcto, el owner correcto y dirección no canónica.
+- **Causa raíz**: elegí el RPC por lo que **devuelve** (una lista de token accounts del par, que era lo
+  que quería imprimir) y no por lo que **decide**. La pregunta que el instrumento tenía que copiar no
+  era "¿tiene token accounts de este mint?" sino la línea exacta que el programa evalúa.
+- **Por qué es lo más caro que encontró el AR, y no un detalle de precisión**: `runbook-deploy.md`
+  designa **esa línea** como la verificación de la mitad (ii) del gate del deploy, y el modo de falla
+  documentado de esa mitad es *"el programa nuevo rechaza el 100% de los depósitos"*. O sea que un
+  `yes` falso **autoriza el deploy hacia ese estado**. Y hoy acertaba **por casualidad**: al slot
+  482608313 ninguna de las 10 token accounts de estos mints es no canónica, así que ninguna corrida
+  contra devnet lo mostraba.
+- **Fix**: el script deriva la ATA canónica (stdlib puro: sha256 + el test de off-curve de ed25519, que
+  es la única parte que no es un hash) y exige que la lista **la contenga**. Además imprime cuántas
+  cuentas **no** canónicas hay, que es exactamente el input sobre el que el chequeo viejo decía `yes`.
+- **Medido, y con las dos mitades**: (1) la derivación contra `getAssociatedTokenAddressSync` de
+  `@solana/spl-token`, que es otra implementación, **502 pares, 0 diferencias**; (2) una sonda que le da
+  **el mismo fixture** al programa (bankrun ⇒ `ConstraintAssociated (2009)` sobre `beneficiary_ata`,
+  `escrow_state` no se crea) y a las dos versiones del chequeo (**vieja: `yes`; nueva: `NO`**). Todo en
+  `fix-pack-blq-med-1.txt`.
+- **Aplicar en**: cualquier script que exista para **predecir** lo que un programa on-chain va a hacer.
+  El criterio: no alcanza con que la respuesta coincida hoy; hay que preguntar **la misma condición**.
+  Y el control que lo prueba no es correr el script contra la cadena — ahí las dos versiones dan lo
+  mismo — es construir el input en el que difieren. Vale igual para `onchain-hash.py` y
+  `programdata-capacity.py`, que también son instrumentos de gate.
+
+---
+
+### [2026-08-10 09:41] Fix pack (AR-BLQ-MED-1) — mi arreglo duplicó las requests y el endpoint devolvió 429 a mitad del barrido
+
+- **Error**: la primera versión del arreglo preguntaba **dos** cosas por escrow (`getAccountInfo` de la
+  ATA derivada **más** `getTokenAccountsByOwner` para contar las no canónicas). Contra el endpoint
+  público de devnet eso terminó en **`HTTP 429 Too Many Requests`** con traceback, a mitad de los 10
+  escrows.
+- **Causa raíz**: agregué una pregunta nueva sin mirar que la que ya estaba **ya contenía la
+  respuesta**. La lista de token accounts del par es un superconjunto: si la ATA canónica existe, está
+  ahí. La pregunta correcta era de **contención**, no una segunda consulta.
+- **Por qué importa**: un instrumento de gate que muere por la mitad no es mejor que uno que contesta
+  mal — es peor de encontrar, porque falla de forma intermitente y sólo cuando alguien lo corre dos
+  veces seguidas.
+- **Fix**: una sola llamada, y el resultado se deriva de ella (`ok` = la dirección derivada está en la
+  lista; `non_canonical` = todo lo demás).
+- **Medido, y esto es lo que me frenó de sacar la conclusión equivocada**: instrumenté **las dos
+  versiones** (la vieja salió con `git show HEAD:…`, sin `checkout`) y conté las llamadas reales:
+  **13 y 13**, idénticas (`getBlockTime` 1, `getProgramAccounts` 1, `getSlot` 1,
+  `getTokenAccountsByOwner` 10), las dos con `main()` devolviendo 0. O sea que el 429 que vi después
+  **no era del cambio**: era de correr dos barridos completos seguidos. Sin esa medición habría
+  "arreglado" un problema que no existía, o peor, habría culpado al arreglo correcto.
+- **Aplicar en**: antes de atribuirle una falla de red a tu propio cambio, **contá las requests de las
+  dos versiones**. Y al revés: antes de agregar una consulta, preguntate si la que ya está no responde
+  lo mismo.
+
+---
+
+### [2026-08-10 09:55] Fix pack — una edición mía dejó las secciones del runbook en orden 4.4 → 4.6 → 4.5
+
+- **Error**: inserté la sección nueva del rollback (4.6) usando como ancla el encabezado de **4.5**, así
+  que quedó **antes** de la sección que la precede. El documento leía 4.4, 4.6, 4.5.
+- **Causa raíz**: elegí el ancla por conveniencia de la herramienta (era el `old_string` único más
+  cercano) y no por la posición donde el contenido tiene que quedar. Un `Edit` inserta **donde está el
+  ancla**, no "al final de la sección anterior".
+- **Fix**: moví el bloque de 4.5 delante del nuevo con dos ediciones y verifiqué el orden leyendo los
+  encabezados del archivo, no el diff.
+- **Aplicar en**: cuando el `old_string` es el **encabezado siguiente**, lo que estás pidiendo es
+  insertar **antes** de él. Si querés después, el ancla tiene que ser la **última línea del bloque
+  anterior**. Y la verificación no es el diff: es leer los encabezados en orden.
+
+---
+
+### [2026-08-10 10:05] Fix pack — rompí una cita que había escrito yo **20 minutos antes**, en la misma sesión
+
+- **Error**: escribí en `fix-pack-mnr-2.txt` y en `runbook-deploy.md` que `release` declara el
+  beneficiario como `SystemAccount` **en `lib.rs:654`**. Era correcto contra el árbol que revisó el AR.
+  Después, en el **mismo** fix pack, le agregué 19 líneas de comentario a `lib.rs` más arriba (MNR-5 y
+  MNR-2) y ese campo se corrió a **`:673`**. Las dos citas quedaron apuntando a un comentario.
+- **Causa raíz**: escribí la cita **antes** de hacer la edición que la desplaza, y las dos cosas eran
+  parte del **mismo** encargo. La entrada `[09:10]` de este archivo ya había registrado esta lección
+  para ediciones separadas por dos waves; lo nuevo es que la ventana puede ser de minutos y estar
+  **dentro de un solo cambio**. "Escribí la cita al final" no alcanza si el orden real es intercalado.
+- **Por qué ningún barrido del diff la caza**: el mismo mecanismo de `[09:10]`. Y esta vez además
+  **falló el barrido automático**: mi verificador compara la línea citada en `HEAD` contra la actual, y
+  estas dos citas **no existen en `HEAD`** (las escribí en el fix pack), así que quedaron fuera del
+  universo del comparador. Un verificador que sólo mira lo que se movió **no ve lo que nació torcido**.
+- **Fix**: las dos citas ahora nombran el ancla — "el campo `beneficiary` de `pub struct Release`" — sin
+  número, y el propio texto dice que se corrió de `:654` a `:673` para que quede el registro. Y el
+  control final ya no es sólo el comparador: es una **lista explícita de las 23 citas que escribí en
+  este fix pack**, cada una asertada **por contenido** contra el árbol final (23/23 OK, incluidas las 10
+  que apuntan a los otros dos repos y a `anchor-syn`).
+- **Medido, y es el dato que ordena el resto**: el barrido encontró **81 citas desplazadas** con ancla
+  real hacia archivos que este fix pack editó. Atribuyéndolas contra `main` (`8fca4729`) y contra `HEAD`
+  (`849c0b5`), **ninguna** estaba válida en `HEAD`: ya apuntaban corrido por W1/W2/W3 de esta HU. Dos
+  ejemplos verificados a mano: `SECURITY.md:99` era *"The source and the chain agree today"* en `main` y
+  otra cosa en `HEAD`; `SOURCE_REPRODUCES_CHAIN` vive en `README.md:886` en `HEAD` y hay citas que lo
+  buscan en `:822-837`. O sea: **las únicas dos citas que rompió este fix pack son las mías**, y el
+  resto es podredumbre anterior que NO se toca acá (las tablas de defectos del SDD y del Story File son
+  registros históricos, y los reportes de WKH-326 están cerrados).
+- **Aplicar en**: (1) las citas propias se verifican **por contenido**, en una lista explícita, no
+  por un diff de líneas; (2) si en un mismo cambio vas a citar un archivo **y** editarlo, citá por
+  nombre; (3) un verificador de citas necesita **dos** modos: el que detecta desplazamiento (compara
+  contra la base) y el que valida las citas nuevas (compara contra el contenido).
+
+---
+
+### [2026-08-10 10:12] Fix pack — la herramienta de medición reportó "1 error" de clippy que no existía
+
+- **Error**: corrí `cargo clippy --all-targets -- -D warnings` redirigiendo a un archivo y leí
+  `cargo clippy: 1 errors, 1 warnings` con **exit 101**. Estuve a punto de salir a buscar un lint roto.
+- **Causa raíz**: el hook de `rtk` intercepta el comando y, cuando la salida está **redirigida**, lo que
+  queda en el archivo es **su propio resumen**, no la salida de clippy — y el exit code que vi era el
+  del wrapper. Corriendo `rtk proxy cargo clippy … ; echo $?` la salida real es
+  `Finished dev profile` y el exit **0**. Clippy está limpio.
+- **Por qué es la lección de siempre con una cara nueva**: el instrumento **fabricó** el hallazgo. Si le
+  hubiera creído, habría "arreglado" código sano, y con `-D warnings` cualquier cambio cosmético parece
+  justificado.
+- **Fix**: los comandos cuya salida importa se corren con `rtk proxy` **sin redirección**, o se leen
+  con `Read`. El mismo cuidado vale para `head`/`cat`/`git log` (ya registrado en la memoria del
+  proyecto).
+- **Aplicar en**: cualquier verde/rojo de esta HU que venga de un archivo redirigido. Antes de creerle a
+  un fallo, **reproducilo sin el envoltorio**; y antes de creerle a un verde, comprobá que el archivo
+  contenga la salida de la herramienta y no un resumen.
+
+---
+
+### [2026-08-10 10:55] Fix pack ronda 2 — mi "antes" salió de un respaldo que ya tenía el arreglo
+
+- **Error**: para medir qué compraba el arreglo del reloj (BLQ-BAJO-3) corrí la sonda contra
+  `BACKUP-list-live-escrows.py`, que yo había etiquetado mentalmente como "el script al final de la
+  ronda 1". Dio **exit 1 en los dos escenarios**, o sea "el defecto no existía", y estuve a un paso de
+  escribir que el hallazgo del AR no se reproducía.
+- **Causa raíz**: ese respaldo lo tomé **después** de haber hecho las ediciones de la ronda 2, justo
+  antes de la batería de mutación — que es para lo que lo había creado. Era un respaldo del **estado
+  arreglado**, no del anterior. El nombre no decía a qué commit correspondía y yo le puse la etiqueta
+  por el momento en que me acordaba de haberlo hecho.
+- **Por qué es peligroso**: un "antes" equivocado no falla, **confirma**. Habría concluido que el
+  bloqueante era falso, con una medición propia respaldándome, y el argumento habría sido difícil de
+  discutir precisamente porque tenía números.
+- **Fix**: dejé de buscar un "antes" y medí el **contrafactual**, que es más fuerte y no depende de
+  ningún archivo histórico: al script **que se entrega** se le desactiva **una sola condición** (sha256
+  distinto verificado antes de correr, restauración desde respaldo con sha256 igual al original) y se le
+  da el **mismo** input. Resultado: con la condición del reloj, exit 1; sin ella, **exit 0** sobre el
+  mismo escrow. Lo mismo para "nada observado". El defecto queda demostrado sobre el código actual.
+- **Aplicar en**: cuando quieras medir "antes vs después", el "antes" tiene que estar **identificado por
+  commit o por digest**, no por memoria. Y si no lo tenés, no lo inventes: desactivá la condición nueva
+  en el código actual y medí el contrafactual. Es más barato y no se puede confundir de archivo.
+
+---
+
+### [2026-08-10 11:02] Fix pack ronda 2 — el bloque "verbatim" del README dejó de serlo por un cambio MÍO en el script
+
+- **Error**: en la ronda 1 pegué en el README la salida literal de
+  `list-live-escrows.py --markdown` y escribí que es **verbatim**, precisamente para que refrescarla sea
+  copiar y no transcribir. En la ronda 2 le agregué el program id a la línea `measured …` del script. El
+  bloque del README quedó **falso otra vez**, y esta vez no por envejecer: por mi propia edición del
+  productor.
+- **Causa raíz**: una afirmación de PROCEDENCIA ("esto es la salida de este comando") crea una
+  dependencia entre dos archivos que ningún test declara. Cambiar el formato de salida rompe el
+  documento sin tocarlo.
+- **Fix**: re-corrí el comando y pegué la salida nueva, y **verifiqué la igualdad mecánicamente** en vez
+  de a ojo: comparé línea por línea las 14 líneas no vacías del comando contra el bloque del README ⇒ 0
+  diferencias. Ese chequeo es el que convierte "verbatim" en algo comprobable.
+- **Aplicar en**: cualquier documento que diga "esto es la salida de X". Si editás X, el chequeo es
+  volver a correrlo y **diffear**, no leer. Y si el bloque se acorta o se edita, la palabra "verbatim"
+  no puede quedarse.
+
+---
+
+### [2026-08-10 11:20] Fix pack ronda 2 — la MISMA línea cambió de número TRES veces en un día, y mi arreglo del arreglo también quedó viejo
+
+- **Error**: en la ronda 1 arreglé una cita rota (`Release.beneficiary`, que yo había desplazado) y en
+  el arreglo escribí *"se corrió de `:654` a `:673`"*. En la ronda 2 agregué más comentarios arriba y
+  el campo pasó a **`:681`**. O sea que **el arreglo de la cita se rompió por el mismo mecanismo que la
+  cita original**, en la misma sesión, un par de horas después.
+- **Causa raíz**: al citar por nombre dejé igualmente un **número de destino** en la prosa, y un número
+  de destino caduca exactamente igual que el de origen. Había cambiado la cita pero no la clase de
+  afirmación.
+- **Lo que lo hace una lección y no un descuido**: tres valores (`:654` → `:673` → `:681`) para la misma
+  línea en un día, y **ninguna de las tres ediciones tocó esa línea**. Es la demostración más limpia de
+  por qué un número de línea no es un ancla: no depende de lo que se edita, depende de lo que hay
+  arriba.
+- **Fix**: los dos lugares ahora citan **por nombre y sin ningún número**, y cuentan la historia de los
+  tres números como el argumento de por qué. Lo cazó mi lista explícita de citas verificadas por
+  contenido, no un diff — y lo cazó porque la lista incluía el ancla, no el número.
+- **Aplicar en**: cuando arregles una cita rota, no la reemplaces por otra cita frágil. Si el ancla es
+  un nombre (campo, función, encabezado), citá el nombre y **no agregues "está en la línea N"** ni como
+  cortesía. Y si querés dejar constancia del movimiento, contá que se movió, no adónde.

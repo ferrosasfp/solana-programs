@@ -23,7 +23,7 @@ This is a project under implementation, not a finished product.
 |---|---|
 | Deployed | Solana **devnet** only. No mainnet deployment exists. |
 | Source vs deployed | **They diverge, deliberately, and nothing has been deployed for it.** This tree carries WKH-343: `deposit` now requires the beneficiary's associated token account for the escrow's mint, one extra account at the end of `Deposit`. Rebuilding this tree therefore does **not** reproduce the bytes on devnet, and the `reproducible-build` / `onchain-hash` CI jobs are expected to be red until a deploy happens. That deploy is a separate step with its own gate and **it has not been run**: it is blocked on the client sending the new account and on the beneficiary in use having that token account, neither of which is true yet (see `doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/runbook-deploy.md`). The last deploy is still WKH-326 (`close` releases the escrow's slot in the index), to devnet on 2026-08-05, in slot `481495859`. The hashes in [Deployment](#deployment) were read back from the chain after it and describe a build of this tree **as it was then**. The deploy before it was the custody window (the release deadline, the deposit floor and ceiling, the vault sweep on `close`), on 2026-08-01 in slot `480496830`; ahead of that one the single live escrow that would have lost its release exit was drained and the ProgramData account was extended because the binary no longer fitted, both written up in [Before upgrading the deployed program](#before-upgrading-the-deployed-program). |
-| Money at risk | None. Devnet. **Nothing is custodied at all right now:** measured 2026-08-10 at slot `482593777`, all 10 `EscrowState` accounts are terminal (6 `Refunded`, 4 `Released`) and **none** is in `Deposited`. The four that had been holding 40,000,000 raw were refunded by the sender on 2026-08-10 (slots `482579398`..`482580179`). When this program does custody something, it is **not** on the test mint we control: those four were on Circle's devnet USDC, which is faucet money and carries a freeze authority that is not ours. See [The mint](#the-mint). Regenerate this row with `python3 scripts/list-live-escrows.py --url devnet --markdown`, which stamps every line with the slot it was measured at. |
+| Money at risk | None in value: devnet, faucet money. **But something IS custodied, and it is stuck.** Measured 2026-08-10 at slot `482622899`: of 11 `EscrowState` accounts, 10 are terminal (7 `Refunded`, 3 `Released`) and **one is `Deposited`** — `5G4Zaa4RkMysquGpm61ENinp8kzo7Uu3kvpBAxFFwy4`, 5,000,000 raw of Circle's devnet USDC — and its beneficiary's canonical associated token account **does not exist**, so no `release` can be built for it. That deposit landed *during* this HU's review, which makes it the incident this change prevents, happening again on the deployed binary: the guard lives in `deposit` and **is not deployed**. Its exit while the deadline holds is for anyone to create that one account; after the deadline, only the sender's refund. Four earlier deposits in exactly this state, 40,000,000 raw, were refunded on 2026-08-10 (slots `482579398`..`482580179`). See [The mint](#the-mint). Re-measure with `python3 scripts/list-live-escrows.py --url devnet --markdown`; it prints the table under [The mint](#the-mint), not this sentence, so the counts here are read off that table by hand — which is how this row came to say 6/4 while the table said 7/3. |
 | Upgrade authority | **Present.** The program is deployed under the upgradeable loader and its authority is a single devnet key. See [Upgrade authority](#upgrade-authority). |
 | External audit | **None.** The program has not been reviewed by a third party security firm. |
 | Test coverage | 61 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. On top of those, the custody window was exercised against the deployed program with seven real transactions, including the one that needs a genuinely expired deadline: see [The custody window, exercised against the deployed program](#the-custody-window-exercised-against-the-deployed-program). |
@@ -715,8 +715,12 @@ That is a decision, not an omission, and it has a condition that would reverse i
 generic escrow infrastructure, while "which token counts as a dollar" is product policy: pinning it
 in the binary would mean two builds for devnet and mainnet, two IDLs, two pinned hashes, and a
 redeploy to rotate it. So the allow list belongs in the component that sits on the critical path of
-every deposit. A compensatory control that rejects an unexpected mint is pending implementation in
-the off-chain co-signer (WKH-CR-1) and does not yet exist. **What would change this:** the day anything sweeps the chain for deposits and
+every deposit. That control **exists**, in the off-chain co-signer: it compares the deposit's mint
+against the one it is configured with and refuses to sign on a mismatch. **What it does not do is
+cover every deposit** — it covers the ones that go through it, and a deposit built and signed outside
+the sponsor never reaches it. (This paragraph said the control "does not yet exist" until 2026-08-10;
+it had existed since 2026-08-04. What is *not* measured from this repository is whether the deployed
+service runs that commit.) **What would change this:** the day anything sweeps the chain for deposits and
 takes them as good without that co-signature, the mint has to be pinned on chain, because at that
 point a self funded deposit with an attacker's mint would enter a product path. The enumerators
 that exist today only feed the refund, which is harmless.
@@ -728,51 +732,95 @@ Two devnet mints show up around this program and they are easy to confuse:
 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | Our own 6 decimal test mint, mint authority `4wPhH4dCndAEbdKJS3TC3JF6eeNfC4JrVej4DoYd54jH`, so we can mint test balances at will. **Freeze authority: none at all** (`freezeAuthority: null`), so no third party can freeze a vault holding it. |
 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | Circle's USDC devnet mint, 6 decimals, mint authority `GrNg1XM2ctzeE2mXxXCfhcTUbejM8Z4z4wNVTy2FjMEz`, which is not ours. **Freeze authority `CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT`, which is not ours either.** |
 
-**Which one the escrow actually holds.** This table is not typed by hand: it is the output of
-`python3 scripts/list-live-escrows.py --url devnet --markdown`, which stamps itself with the slot it
-read, so a refreshed row cannot silently lose its date.
+**Which one the escrow actually holds.** Everything from the next line to the end of the table is the
+**verbatim output** of
 
-measured 2026-08-10 08:27:25Z at slot `482593777` against https://api.devnet.solana.com
+```bash
+python3 scripts/list-live-escrows.py --url devnet --markdown
+```
 
-| escrow | status | amount (raw) | mint | beneficiary can receive | exit |
-|---|---|---|---|---|---|
-| `2eWYonV4PjznByNkLu7u8YLvbZcSh37d4QzreqeTVG14` | Refunded | 500000 | test mint | yes | terminal |
-| `2zWkoznm86cqX6bWExsR3Wvw5njffDpxuCJCXTsT7LWb` | Refunded | 5000000 | Circle | **NO** | terminal |
-| `4YRtEL1RGuu5zkSYwMUrkEJajbFLbJFKsojMNEoHxVPo` | Refunded | 1000000 | test mint | yes | terminal |
-| `93ZUG1zdVrUTHv4zuup1wDCPdYrXa8QegU42D4rfzuJL` | Released | 500000 | test mint | yes | terminal |
-| `BSj3YUJUc98w89ckWb96shfRv4sakJuu4BjfKuhmvgdq` | Refunded | 5000000 | Circle | **NO** | terminal |
-| `BmHDdjKLCJXcdzd8CqbHaeRWY9utbviZduXhbnH5Jm9F` | Refunded | 10000000 | test mint | yes | terminal |
-| `Crqz6hQoChPaP3TVPU4H7kbXo4FPUXz3NzriG3JYmWdw` | Refunded | 20000000 | Circle | **NO** | terminal |
-| `DHc1DYrSm2QeWe6txAs5NnDSzKYeXcCC1WUwviHk11oj` | Released | 2000000 | test mint | yes | terminal |
-| `GXY2todK6pJPdT8h1EcRNZgFX7cZXEnDN7L3XSHCHY2J` | Released | 10000000 | test mint | yes | terminal |
-| `HnzegD1fxPNpp7DadNWpStS2a5siSVXVXWV2dykJx3uS` | Refunded | 10000000 | Circle | **NO** | terminal |
+all eight columns of it, pasted unedited, so that refreshing it is a copy and not a transcription. It
+stamps itself with the slot it read, so a refreshed row cannot silently lose its date.
 
-Ten `EscrowState` accounts, six on our test mint and four on Circle's, and **all ten are terminal**:
-nothing is custodied at that slot. Two earlier versions of this paragraph counted eight accounts and
-named two of them as the only ones still `Deposited`; those two addresses are now **absent** from the
-chain entirely. This is the clearest case in this repo of a paragraph that goes stale with nobody
-editing it, which is why it is generated now instead of written.
+⚠️ The previous version of this paragraph said the table was "not typed by hand: it is the output of"
+that command, and **it was not**: the command emits eight columns and the table had six, with the mint
+replaced by the labels `test mint` / `Circle`. The data were right and the provenance was false, which
+is the worse of the two failures: it offered generation as the guarantee against going stale, while
+anybody who ran the command got eight columns that did not fit and would have transcribed by hand
+again — the same mechanism that had already left two versions of this paragraph wrong. If you shorten
+the table, say that you did.
 
-The `beneficiary can receive` column is the WKH-343 check, and it is the useful one: all ten escrows
-share one beneficiary (`Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq`), and that beneficiary has a
-token account for our test mint but **none** for Circle's mint. The four rows on Circle's mint are
-exactly the four deposits that could never be released, because `release` requires that account and
-does not create it.
+measured 2026-08-10 11:00:33Z at slot 482622899 against https://api.devnet.solana.com, program DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x
+
+| escrow | status | amount (raw) | mint | beneficiary | deadline | beneficiary can receive | exit |
+|---|---|---|---|---|---|---|---|
+| `5G4Zaa4RkMysquGpm61ENinp8kzo7Uu3kvpBAxFFwy4` | Deposited | 5000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-10 12:55:42Z | **NO** | live until 2026-08-10 12:55:42Z |
+| `2eWYonV4PjznByNkLu7u8YLvbZcSh37d4QzreqeTVG14` | Refunded | 500000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-01 18:58:23Z | yes | terminal |
+| `2zWkoznm86cqX6bWExsR3Wvw5njffDpxuCJCXTsT7LWb` | Refunded | 5000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-09 17:07:45Z | **NO** | terminal |
+| `4YRtEL1RGuu5zkSYwMUrkEJajbFLbJFKsojMNEoHxVPo` | Refunded | 1000000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-07-27 22:08:03Z | yes | terminal |
+| `93ZUG1zdVrUTHv4zuup1wDCPdYrXa8QegU42D4rfzuJL` | Released | 500000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-01 19:56:59Z | yes | terminal |
+| `BSj3YUJUc98w89ckWb96shfRv4sakJuu4BjfKuhmvgdq` | Refunded | 5000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-08 09:29:54Z | **NO** | terminal |
+| `BmHDdjKLCJXcdzd8CqbHaeRWY9utbviZduXhbnH5Jm9F` | Refunded | 10000000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-07-22 21:48:46Z | yes | terminal |
+| `Crqz6hQoChPaP3TVPU4H7kbXo4FPUXz3NzriG3JYmWdw` | Refunded | 20000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-05 21:31:48Z | **NO** | terminal |
+| `DHc1DYrSm2QeWe6txAs5NnDSzKYeXcCC1WUwviHk11oj` | Released | 2000000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-07-27 23:20:29Z | yes | terminal |
+| `GXY2todK6pJPdT8h1EcRNZgFX7cZXEnDN7L3XSHCHY2J` | Released | 10000000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-07-22 18:36:14Z | yes | terminal |
+| `HnzegD1fxPNpp7DadNWpStS2a5siSVXVXWV2dykJx3uS` | Refunded | 10000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-08 03:12:27Z | **NO** | terminal |
+
+11 escrow_state account(s) total; 0 refund-only; 1 with an unpayable beneficiary.
+
+Eleven `EscrowState` accounts, six on our test mint (`8yRX3fZ2…`) and five on Circle's (`4zMMC9sr…`).
+Ten are terminal — seven `Refunded`, three `Released` — and **one is `Deposited`**: the first row,
+5,000,000 raw of Circle's USDC, still inside its release window and with `beneficiary can receive:
+**NO**`.
+
+⚠️ **That row appeared while this HU was under review**, between slot `482620696` (when this table read
+eleven-minus-one and every account was terminal) and `482622899`. It is the incident this change
+prevents, happening again against the **deployed** binary, which does not have the guard: the guard is
+in `deposit` and the deploy has not run. Nothing about it is hypothetical, and nothing in this
+repository caused it. Two earlier versions of this paragraph counted eight accounts and named two of
+them as the only ones still `Deposited`; those two addresses are now absent from the chain entirely.
+This is the clearest case in the repo of a paragraph that goes stale with nobody editing it — the
+paste-from-a-command lowers the cost of refreshing it, and **does not** stop it going stale.
+
+The `beneficiary can receive` column is the WKH-343 check, and it is the useful one: all eleven escrows
+share one beneficiary (`Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq`), whose **canonical associated
+token account** exists for our test mint (`BQC6fXinyR4KnESJso1oY8nnbQjXjbFAJb221V7UkiVe`) and does
+**not** exist for Circle's (`Cq9AinM9WCry8Pyk5EsFJ2hdQomKAUES7Cq7YLunRGMC`). The five rows on Circle's
+mint are exactly the five deposits that could not be released, because `release` requires that one
+address and does not create it — four already refunded, and one still holding tokens. Creating that
+account is one transaction, payable by anyone, and it needs no signature from the beneficiary.
+
+The word "canonical" is doing work there. The column asks for the derived ATA address, not for "does
+the beneficiary hold this mint somewhere": the program compares the address
+(`associated_token::`) and rejects any other token account of the same owner and mint with
+`ConstraintAssociated`. Until the WKH-343 fix pack this script asked the looser question and would have
+answered `yes` on an input the program rejects; measured in
+`doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/fix-pack-blq-med-1.txt`.
+
+Existing is not sufficient either, and the column now separates the two `NO`s, because **who can fix
+them is not the same**. An ATA that does not exist is one transaction away, payable by anyone, without
+the beneficiary's signature. An ATA that exists and is **frozen** is nobody's to fix on this side: the
+account constraints still pass, so a `release` can be built, and the SPL transfer is what reverts, with
+`AccountFrozen`. Only the mint's freeze authority can lift it — and on the mint that has actually held
+custody here, that authority is not ours (see the table above). A frozen row prints `**NO** (frozen)`.
 
 ⚠️ **What that does NOT establish.** The mint and the sender co-vary perfectly: the six rows on our
-mint came from `8tJVcM2JehYkyPLHUZ3rxNvhfADaQdHx7xaJw6kS6ux8` and the four on Circle's from
-`4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P`. With ten rows and that confounding, the data do
-**not** separate "the mint is the problem" from "which client build made the deposit is the problem".
-What *is* measured is that the beneficiary cannot explain it: it is byte for byte the same in all ten
-rows, including the three that were paid. One deposit from the first sender on Circle's mint, or the
-reverse, would separate them; none exists.
+mint came from `8tJVcM2JehYkyPLHUZ3rxNvhfADaQdHx7xaJw6kS6ux8` and the five on Circle's from
+`4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P` — the new `Deposited` row included, which is the fifth.
+With eleven rows and that confounding, the data still do **not** separate "the mint is the problem" from
+"which client build made the deposit is the problem". What *is* measured is that the beneficiary cannot
+explain it: it is byte for byte the same in all eleven rows, including the three that were paid. One
+deposit from the first sender on Circle's mint, or the reverse, would separate them; none exists.
 
 That distinction matters because [Known limitations](#known-limitations) names a mint's freeze
 authority as the only path to permanent entrapment we know of. Our test mint has no freeze authority
-to use; Circle's devnet mint has one and it is not ours. When this program last custodied a balance,
-that limitation covered 100% of it. It costs nothing today: devnet, faucet balances, no vault was
-ever frozen (`state: initialized` on both vaults of the day, read 2026-08-05). The exposure is real
-in kind and, right now, zero in value — and it returns with the next deposit, not with an edit to
+to use; Circle's devnet mint has one and it is not ours. Every balance this program has custodied has
+been on that mint, so that limitation has covered 100% of it — **including the 5,000,000 raw it is
+holding right now**. What it costs today is still zero in value: devnet, faucet balances, and no vault
+has been frozen (`state: initialized` on both vaults of the day, read 2026-08-05; the current vault's
+own state is not asserted here — `scripts/list-live-escrows.py` reports the *beneficiary's* account
+state, not the vault's). The exposure is real in kind, and it stopped being hypothetical with a deposit
+this repository did not make — which is the point: it returns with the next deposit, not with an edit to
 this file.
 
 Both facts are one command each:

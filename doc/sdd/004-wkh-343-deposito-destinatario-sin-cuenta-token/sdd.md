@@ -628,8 +628,12 @@ privilegio, y hace imposible que un cambio futuro le mande tokens desde acá sin
 agregar el `mut` a mano.
 
 Base para creer que compila (leído, no supuesto):
-`anchor-syn` 1.1.2 `codegen/accounts/constraints.rs:1311` genera `let wallet_address =
-#wallet_address.key();`, y `anchor-lang` 1.1.2 `src/lib.rs:545` tiene `impl Key for Pubkey`. Los args
+`anchor-syn` 1.1.2 `codegen/accounts/constraints.rs:1314` genera `let wallet_address =
+#wallet_address.key();`, y `anchor-lang` 1.1.2 `src/lib.rs:545` tiene `impl Key for Pubkey`.
+(La cita decía `:1311`, que es el `#token_program_check`. Re-medido: `:1314`. Y dos líneas más útiles
+del mismo bloque, porque son la razón por la que el guard exige una DIRECCIÓN y no un contenido:
+`:1318-1321` derivan `__associated_token_address` y tiran `ConstraintAssociated` cuando
+`#name.key()` no es esa dirección.) Los args
 declarados en `#[instruction(...)]` están en scope dentro de `try_accounts` — el propio archivo ya lo
 usa para `remittance_id` en las seeds (`lib.rs:553`). **Aun así no lo afirmo: W0.2 lo compila.**
 
@@ -650,6 +654,16 @@ con `BeneficiaryMismatch` **apendizado al final** del enum (código 6009), por l
 El cruce contra el arg **no es opcional en la forma B**: sin él, un cliente que mande el arg X y la
 cuenta Y grabaría `escrow.beneficiary = X` (`lib.rs:167`) y validaría la ATA de Y. Eso no sería un
 guard: sería un guard que mira al lado.
+
+⚠️ **Nota agregada en el fix pack (AR-MNR-2), y cambia el balance de esta comparación aunque no la
+decisión.** La forma B declara `beneficiary: SystemAccount<'info>` en `Deposit`, o sea que **habría
+hecho que `deposit` exija sobre el beneficiario lo mismo que `release` exige**. Eso cierra un camino
+que la forma A deja abierto y que **está medido en bankrun**: con un `beneficiary` propiedad del SPL
+Token program y su ATA canónica creada, el depósito ENTRA y el `release` falla siempre con
+`AccountNotSystemOwned (3011)` (`fix-pack-mnr-2.txt`). La comparación A vs B se resolvió por costo —
+una cuenta menos, ningún código de error nuevo — **sin ver ese argumento**. No se cambia la elección:
+el camino es PREEXISTENTE (el binario desplegado se comporta igual) y requiere un cliente modificado.
+Pero el argumento faltaba en la balanza y queda escrito acá, no sólo en el evidence file.
 
 #### Qué error emite, y por qué no se agrega un código nuevo en la forma A
 

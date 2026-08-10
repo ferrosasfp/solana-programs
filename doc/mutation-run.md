@@ -153,6 +153,24 @@ and the three md5 compared against the reference, never against a copy kept outs
 Reference md5 for this run: `b024cd91d03d6cec8fcbb5bf34884c23` /
 `26b2685ce861b04e22322b6d52430836` / `4904ecc950795662d8c4e7cca262247c`, identical after all of them.
 
+⚠️ **Two of those three moved AFTER this run, in the review fix pack, and that is expected.** The fix
+pack added `//` comments to `lib.rs` (the measured consequence of adding `mut` to `beneficiary_ata`, and
+the second route to a stuck escrow), so:
+
+| File | During this run | Fix pack round 1 | Fix pack round 2 | Why |
+|---|---|---|---|---|
+| `programs/escrow/src/lib.rs` | `4904ecc950795662d8c4e7cca262247c` | `8ea46d368a0a6d6c89fa59c90a611546` | `15c8d5ecea1babd3f029b8bcce0798ed` | round 1 added `//` comments; round 2 also rewrote a `///` |
+| `target/deploy/escrow.so` | `b024cd91d03d6cec8fcbb5bf34884c23` | `1ee62827125e75587f5595305664834c` | `1588018c0cc754db49462f93054455c9` | the binary embeds the constraint LINE NUMBERS, and the comments moved them. Same as the WKH-326 second pass. 276 800 bytes throughout, so the capacity preflight is unaffected |
+| `target/idl/escrow.json` | `26b2685ce861b04e22322b6d52430836` | `26b2685ce861b04e22322b6d52430836` | `25b498214df3f6f87a936b3e536b290b` | round 1 did **not** move it (byte for byte identical, `diff`-verified): `//` does not reach the IDL. Round 2 corrected a `///` on `Deposit.mint`, which Anchor copies into the IDL, so the canonical sha256 moved to `d295b7c7…` — recorded in `idl-hash.md`, and why it was worth a rebuild is written there |
+
+**None of the above is a re-run.** The five mutants were measured on the tree of `000c96c` with the md5
+of the first column, and they were not re-measured. What justifies that, and it is checkable rather than
+asserted: neither round changed an **executable line** of `lib.rs`. Round 1 was classified over the diff
+(19 added lines, all `//`, 0 removed, 0 non-comment) and round 2 only rewrote comment text — the `///`
+of `Deposit.mint`, which is documentation that Anchor happens to copy into the IDL, not code. The
+mutants and their killers are the same code. If a future change touches anything but comments, this
+table needs a new pass, like WKH-326 needed one.
+
 | # | Mutant | Result | Tests that died |
 |---|--------|--------|-----------------|
 | M20 | `Deposit`: the `beneficiary_ata` field deleted | KILLED | `escrow.ts` 10, 11, 12, 13; `escrow-index.ts` 20 |

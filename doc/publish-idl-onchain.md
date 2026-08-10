@@ -5,11 +5,17 @@ Right now the explorer shows this program as raw bytes. Publishing the IDL is wh
 arguments, for anybody looking at a transaction without cloning the repository.
 
 **Executed on 2026-08-01, and again on 2026-08-05 after the WKH-326 deploy.** The IDL is published.
-`anchor idl fetch` returns it, and its canonical sha256 is
-`bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, the same value this repository
-builds and the same one pinned in `chaski-v3` and `wasiai-facilitator`. The number it replaced,
-`fb64c937...`, is the 2026-08-01 one and appears below wherever this document describes that first
-publication.
+`anchor idl fetch` returns it, its canonical sha256 is
+`bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, and that is the value pinned in
+`chaski-v3` and `wasiai-facilitator`. The number it replaced, `fb64c937...`, is the 2026-08-01 one and
+appears below wherever this document describes that first publication.
+
+⚠️ **What that hash is NOT: what this tree builds.** It was, until WKH-343 added an account to
+`deposit`. This sentence used to say "the same value this repository builds", which contradicted the
+row further down in this same document that says it is **no longer** the same value — one file with two
+answers to "which hash do I pin". The hash this tree builds lives in exactly one place,
+`doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md`, and is deliberately not
+repeated here.
 
 **The command in this document does not work, and the way it fails is worth knowing.** See
 [What actually worked](#what-actually-worked) at the end. The rest of the document is kept as it was
@@ -153,7 +159,11 @@ were updated in the workflow and the README, the IDL was republished through the
 3 still fails the documented way), and the two consumers were re-pinned last, `chaski-v3` at
 `bd85dfa` and `wasiai-facilitator` at `f9bddce`. Both now pin
 `bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, which is what `anchor idl fetch`
-returns and what `anchor build` produces in this tree.
+returns. ⚠️ It is **no longer** what `anchor build` produces in this tree — WKH-343 moved that value,
+and it is recorded only in
+`doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md`. This paragraph describes the
+2026-08-05 run, and at that moment the two coincided; the sentence is kept in the past tense on
+purpose, because the re-pin of each consumer is that repo's decision and has not happened.
 
 ## What actually worked
 
