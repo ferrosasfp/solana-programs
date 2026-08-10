@@ -1,0 +1,85 @@
+# wave:       W5 / M22
+# pasada:     1
+# fecha:      2026-08-10T09:02Z
+# commit:     000c96c39a02ad5c70580017625ca4e5fa2a13ab
+# lib.rs md5: 4904ecc950795662d8c4e7cca262247c   <- el arbol RESTAURADO (referencia 4904ecc950795662d8c4e7cca262247c)
+# baseline:   n/a   <- CON EL MUTANTE APLICADO (la baseline sana es 61 passing, 0 failing)
+# discriminador: n/a (no compila: la suite no corrio)
+#
+# ---------------------------------------------------------------------------
+# CONTROL DE APLICACION, que es lo que separa "sobrevivio" de "no lo aplique"
+# ---------------------------------------------------------------------------
+# sha256 de lib.rs CON el mutante : ae795c4a2c207b48e389a3cf1d4281cc6d2f21a45f61967ead7e42eda3d67d2c
+# sha256 de lib.rs original        : 52dd64c8ea6047f4f2925812d4de479c1ed8aa53ee7a4f98696e4f95f0f9b2be
+# DIFIEREN -> el mutante estaba REALMENTE aplicado cuando corrio lo de abajo.
+#
+# Sin este control, un mutante NO APLICADO y uno que SOBREVIVE dan la MISMA salida verde,
+# y la conclusion de cada uno es la opuesta.
+#
+# ---------------------------------------------------------------------------
+# CONTROL DE RESTAURACION (despues de este mutante)
+# ---------------------------------------------------------------------------
+# git checkout -- programs/escrow/src/lib.rs   y luego  git diff HEAD  ->  VACIO (0 bytes)
+# anchor build  ->  0 lineas "error"
+# los 3 md5, comparados contra la referencia y NO supuestos:
+#   target/deploy/escrow.so      b024cd91d03d6cec8fcbb5bf34884c23   OK
+#   target/idl/escrow.json       26b2685ce861b04e22322b6d52430836   OK
+#   programs/escrow/src/lib.rs   4904ecc950795662d8c4e7cca262247c   OK
+# La restauracion se prueba con git contra HEAD, NUNCA con un respaldo en el scratchpad:
+# ese directorio puede desaparecer entre dos comandos.
+#
+# ===========================================================================
+# M22 -- `Account<'info, TokenAccount>`  ->  `UncheckedAccount<'info>`
+# ===========================================================================
+# QUE PRETENDIA RESTAURAR: la desaparicion de la exigencia de que la cuenta exista, y con ella el
+# 3012 y el nombre de cuenta que lo desambigua.
+#
+# RESULTADO: **NO COMPILA.** BUILD_EXIT=1, con dos errores de rustc. La suite NO se corrio, porque no
+# hay binario contra el que correrla.
+#
+# ⚠️ ESTO ES MAS FUERTE QUE "KILLED", y hay que escribirlo con precision. Un mutante que muere por
+# tests necesita que los tests existan y se corran. Un mutante que **no compila** no puede llegar a
+# un binario de ninguna manera: lo frena el compilador, siempre, sin depender de que nadie corra nada.
+#
+# ⚠️ Y CORRIGE §11 del Story File. §11 lista M22 como el mutante de UNA LINEA que restauraria la
+# ambiguedad completa del 3012. Medido: **ese mutante de una linea no existe.** Para llegar a un
+# `UncheckedAccount` hay que ADEMAS borrar las dos constraints `associated_token::`, porque son ellas
+# las que no compilan contra ese tipo. O sea que es una edicion de DOS partes, y la primera de ellas
+# (borrar las constraints) ya es esencialmente M20, que muere con 5 tests.
+#
+# POR QUE no compila, leido del generador: anchor-syn emite `let my_owner = #name.owner;` y lo compara
+# contra `#wallet_address.key()`, que es un `Pubkey`. Para `Account<'info, TokenAccount>`, `.owner` es
+# el campo `owner` del TokenAccount deserializado, un `Pubkey`. Para `UncheckedAccount`, `.owner` es el
+# del AccountInfo (el programa dueño de la cuenta) y es un `&Pubkey`. De ahi el `can't compare
+# &__Pubkey with __Pubkey`.
+#
+# Salida cruda del compilador, completa, abajo.
+
+=== captura cruda ===
+
+Program ID mismatch detected for program 'escrow':
+  Keypair file has: 9gSxzEKJb2Qkxvoqnf6bwzRmYPyVCc38ZYBwm8yESshT
+  Source code has:  DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x
+
+Please run 'anchor keys sync' to update the program ID in your source code or use the '--ignore-keys' flag to skip this check.
+   Compiling escrow v0.1.0 (/home/ferdev/.openclaw/workspace/wt-wkh343/programs/escrow)
+error[E0277]: can't compare `&__Pubkey` with `__Pubkey`
+   --> programs/escrow/src/lib.rs:520:10
+    |
+520 | #[derive(Accounts)]
+    |          ^^^^^^^^ no implementation for `&__Pubkey == __Pubkey`
+    |
+    = help: the trait `PartialEq<__Pubkey>` is not implemented for `&__Pubkey`
+    = note: this error originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+   --> programs/escrow/src/lib.rs:520:10
+    |
+520 | #[derive(Accounts)]
+    |          ^^^^^^^^ expected `Pubkey`, found `&Pubkey`
+    |
+    = note: this error originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+Some errors have detailed explanations: E0277, E0308.
+For more information about an error, try `rustc --explain E0277`.
+error: could not compile `escrow` (lib) due to 2 previous errors

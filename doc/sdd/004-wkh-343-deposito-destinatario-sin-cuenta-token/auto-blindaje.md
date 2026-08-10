@@ -13,8 +13,12 @@ Cada una tiene el input concreto que la reproduce, para que la HU siguiente la p
 - **Causa raíz**: el worktree no traía `target/deploy/escrow-keypair.json`, así que el **primer**
   `anchor build` lo **generó** con una llave aleatoria (`9gSxzEKJb2Qkxvoqnf6bwzRmYPyVCc38ZYBwm8yESshT`,
   verificada con `solana-keygen pubkey`). Desde ese instante **toda** corrida siguiente de `anchor build`
-  compara esa llave contra `declare_id!` (`programs/escrow/src/lib.rs:62`) y no coinciden. El primer
+  compara esa llave contra el `declare_id!` de `programs/escrow/src/lib.rs` y no coinciden. El primer
   build no avisó porque en ese momento el archivo no existía.
+  (Se cita por **nombre de macro** y no por número de línea a propósito: esta entrada decía
+  `lib.rs:62` y W2 la dejó rota al agregar 6 líneas al `//!` del módulo, que empujaron el
+  `declare_id!` a `:70`. La cazó el verificador de citas re-corrido después de W4 — ver la entrada
+  [09:10] más abajo.)
 - **Por qué importa, y no es cosmético**: W0.2 (spike) y W5 (mutantes) deciden **"compila / no compila"**
   leyendo la salida de `anchor build`. Un mensaje de error en rojo que termina en
   *"Please run 'anchor keys sync' … or use the '--ignore-keys' flag"* es exactamente la forma que
@@ -132,3 +136,35 @@ Lo encontré recién en W1, dos waves después, en un `git status --porcelain` *
   Medido a favor del fix: al slot 482593777 el script sigue imprimiendo `NO` en las 4 filas del mint de
   Circle, o sea que la precondición del gate **sigue sin cumplirse** — y eso ahora es un dato que el
   script produce, no un supuesto heredado.
+
+
+---
+
+### [2026-08-10 09:10] Wave W4 — rompí una cita mía al editar OTRA cosa, dos waves antes
+
+- **Error**: la entrada `[08:05]` de este archivo citaba `programs/escrow/src/lib.rs:62` para el
+  `declare_id!`. Cuando la escribí era correcta. Al re-correr el verificador de citas **después de W4**,
+  esa línea ya no era el `declare_id!` sino un renglón del `//!` del módulo.
+- **Causa raíz**: en **W2** agregué 6 líneas al doc comment `//!` del módulo (la exigencia nueva en la
+  tabla de instrucciones y el párrafo de la ATA). Eso empujó **todo** lo que venía después: el
+  `declare_id!` pasó de `:62` a `:70`. Yo no toqué esa línea ni ese bloque; la rompí **desplazándola**.
+- **Por qué ningún barrido normal la caza**: los barridos miran **lo que escribiste**, no **lo que
+  corriste**. El diff de W2 no contiene la palabra `declare_id!` ni la cita del auto-blindaje, así que
+  revisar el diff —que es lo que uno hace— no la muestra. Sólo aparece re-evaluando la cita **contra el
+  árbol nuevo**, que es exactamente para lo que el Story File pide re-correr el verificador después de W4.
+- **Fix**: dos cosas, y la segunda es la que importa.
+  1. La cita ahora dice "el `declare_id!` de `programs/escrow/src/lib.rs`", **sin número de línea**. Un
+     ancla por nombre no se desplaza cuando alguien edita seis líneas más arriba; un número sí. Es el
+     mismo criterio que se aplicó a `.nexus/project-context.md`, cuya cita `README.md:769` ya estaba
+     corrida a `:772` antes de que esta HU empezara.
+  2. El verificador post-W4 quedó partido en **dos listas**: los anclajes estructurales del Story File
+     §12 re-mapeados a su línea nueva, y **las citas que yo escribí**. La segunda lista es la que evita
+     publicar una cita rota; la primera documenta cuánto se corrió cada cosa.
+- **Medido**: de las 50 citas de §12, **23 se desplazaron** por W1/W2 (15 en `lib.rs`, 8 en
+  `tests/escrow.ts`) y **ninguna desapareció** — los 23 textos siguen existiendo, sólo se movieron. Las
+  27 restantes (README, SECURITY.md, `escrow-index.ts`, `escrow-window.ts`, `Anchor.toml`, `Cargo.toml`,
+  `mutation-run.md`) no se movieron. Y de las citas que escribí yo, **1 de 4 estaba rota**. Resultado
+  final del verificador: **41/41 OK**.
+- **Aplicar en**: toda HU que agregue líneas a un archivo que otros documentos citan por número. El
+  control no es "revisá tu diff": es **re-evaluar las citas contra el árbol final**. Y el arreglo
+  duradero no es corregir el número, es **dejar de citar por número** lo que se puede citar por nombre.
