@@ -24,7 +24,8 @@ reusar los números.
 |-----|-----|--------|--------|------------|
 | 001 | HU-SOL-?? | (histórica, carpeta ausente del árbol) | — | — |
 | 002 | HU-SOL-20 | escrow remittance-id recovery (`EscrowIndex`, `register_escrow`, `deregister_escrow`) | HECHO (desplegado 2026-08-01) | carpeta ausente del árbol; referenciada desde `chaski-v3/contracts/idl/escrow-idl.hash.test.ts:19-21` |
-| **003** | **WKH-326** | **El tope de 32 del índice de escrows deja de crecer para siempre** | **DONE y DESPLEGADO en devnet el 2026-08-05, slot `481495859`** | [`work-item.md`](003-wkh-326-cap-del-indice-liberado-en-close/work-item.md) · [`sdd.md`](003-wkh-326-cap-del-indice-liberado-en-close/sdd.md) · [`story-HU-326.md`](003-wkh-326-cap-del-indice-liberado-en-close/story-HU-326.md) · [`ar-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/ar-report.md) · [`cr-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/cr-report.md) · [`qa-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/qa-report.md) · [`auto-blindaje.md`](003-wkh-326-cap-del-indice-liberado-en-close/auto-blindaje.md) · [`idl-hash.md`](003-wkh-326-cap-del-indice-liberado-en-close/idl-hash.md) · [`report.md`](003-wkh-326-cap-del-indice-liberado-en-close/report.md) |
+| 003 | WKH-326 | El tope de 32 del índice de escrows deja de crecer para siempre | DONE y DESPLEGADO en devnet el 2026-08-05, slot `481495859` | [`work-item.md`](003-wkh-326-cap-del-indice-liberado-en-close/work-item.md) · [`sdd.md`](003-wkh-326-cap-del-indice-liberado-en-close/sdd.md) · [`story-HU-326.md`](003-wkh-326-cap-del-indice-liberado-en-close/story-HU-326.md) · [`ar-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/ar-report.md) · [`cr-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/cr-report.md) · [`qa-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/qa-report.md) · [`auto-blindaje.md`](003-wkh-326-cap-del-indice-liberado-en-close/auto-blindaje.md) · [`idl-hash.md`](003-wkh-326-cap-del-indice-liberado-en-close/idl-hash.md) · [`report.md`](003-wkh-326-cap-del-indice-liberado-en-close/report.md) |
+| **004** | **WKH-343** | **El depósito acepta un destinatario que no puede recibir el token, y el repo habla de la cadena en presente** | **in progress (F1 hecho, esperando `HU_APPROVED`)** | [`work-item.md`](004-wkh-343-deposito-destinatario-sin-cuenta-token/work-item.md) |
 
 ## WKH-326 — resumen de una línea
 
@@ -54,6 +55,17 @@ quedó re-clavado en `chaski-v3` (`bd85dfa`) y `wasiai-facilitator` (`f9bddce`),
 dos hashes del binario (`59ec1098…` con el relleno de la cuenta, `455e4e36…` sin él) están en
 `.github/workflows/verified-build.yml` y en el README. Detalle y verificación en
 [`idl-hash.md`](003-wkh-326-cap-del-indice-liberado-en-close/idl-hash.md), sección de cierre.
+
+## WKH-343 — resumen de una línea
+
+`deposit` no verifica que el `beneficiary` tenga cuenta de token para el mint del escrow, y `release`
+la exige sin poder crearla (`README.md:655-657` ya lo documentaba como límite conocido); F1 mide que
+esto puede ser síntoma de un mint equivocado (`lib.rs:518-529`: el co-firmante off-chain nunca valida
+el mint) y NO de un destinatario inválido en sí — sin confirmar en vivo, ver Missing Inputs del
+work-item. En paralelo, `scripts/list-live-escrows.py:170,198` recomienda liberar escrows bloqueados
+apoyado en que el upgrade de WKH-326 "todavía no pasó"; ya pasó, y hoy ese camino revierte. Work-item
+en F1, tres mediciones RPC pendientes (sin herramienta de ejecución disponible en esta sesión),
+esperando `HU_APPROVED`.
 
 ## Contexto del proyecto
 
