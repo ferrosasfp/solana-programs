@@ -39,6 +39,17 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      # The address derivation inside scripts/list-live-escrows.py is hand written
+      # crypto (sha256 + an ed25519 off-curve test, standard library only) and it
+      # decides half of the WKH-343 deploy gate: whether the beneficiary can be paid.
+      # `anchor test` never imports it, so without this step nothing exercises it.
+      # Placed next to clippy on purpose: no toolchain, no network, no cluster, and it
+      # fails in seconds. Its vectors come from an independent implementation, and six
+      # mutations of the derivation were confirmed to turn it red before it was added
+      # (see doc/sdd/004-.../fix-pack-round-2.txt).
+      - name: Derivation self-test (scripts/list-live-escrows.py)
+        run: python3 scripts/derivation-selftest.py
+
       # A second, modern host toolchain used ONLY to build the Anchor CLI binary.
       # anchor-cli 1.1.2 pulls cargo-platform 0.3.3, whose minimum supported rustc
       # is above 1.89.0, so building the tool with the program's pinned channel

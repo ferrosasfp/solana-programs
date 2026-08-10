@@ -1,0 +1,63 @@
+WKH-343 — fix pack, MNR-2
+=============================================================================
+"Hay un SEGUNDO camino al mismo estado trabado, y no estaba documentado."
+
+El límite del guard estaba escrito como UN caso ("la ATA existía y el
+beneficiario la cerró después"). Hay otro, y es PREEXISTENTE: no lo introduce
+esta HU y no lo cierra.
+
+El mecanismo, leído del código:
+  - `deposit` recibe `beneficiary` como ARG `Pubkey`, sin ninguna constraint de
+    tipo (el arg del handler, `programs/escrow/src/lib.rs:146`, y el
+    `#[instruction(...)]` de `Deposit`, `:526`).
+  - `release` lo declara `SystemAccount<'info>`: el campo `beneficiary` de
+    `pub struct Release` en `programs/escrow/src/lib.rs`.
+
+⚠️ Esas dos referencias se citan distinto A PROPOSITO, y la historia del numero es el
+argumento. Ese campo estaba en `:654` cuando el AR lo leyo; la ronda 1 del fix pack le
+agrego comentarios mas arriba y paso a `:673`; la ronda 2 agrego mas y hoy esta en
+`:681`. **Tres numeros en un dia para la misma linea, y ninguna de las tres ediciones
+la toco.** Por eso va POR NOMBRE: no se cita el numero de destino, porque el numero de
+destino tambien caduca. La primera version de este parrafo decia `:654` y la rompi yo,
+en esta misma sesion, editando otra cosa; la segunda decia `:673` y la rompi otra vez,
+igual. El ancla por nombre es la unica que sobrevive.
+
+O sea que un `beneficiary` que NO sea propiedad del System Program entra por
+`deposit` y no puede salir nunca por `release`.
+
+-----------------------------------------------------------------------------
+MEDIDO, en bankrun contra target/deploy/escrow.so (el binario de este árbol)
+-----------------------------------------------------------------------------
+Fixture: el `beneficiary` es una token account (o sea, una dirección cuyo owner
+es el SPL Token program), y su ATA canónica se creó con `allowOwnerOffCurve`, que
+es lo que hace pasar el guard nuevo de WKH-343.
+
+    beneficiary owner  : TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+    deposit            : ENTERED, escrow_state 154 bytes
+    release            : AccountNotSystemOwned (3011) on account beneficiary
+    vault still exists : true
+    1 passing
+
+⇒ El depósito ENTRA (el guard de esta HU está satisfecho: la ATA canónica del
+beneficiario existe) y el `release` falla **siempre**, sin importar el deadline,
+la firma ni el estado. La única salida es el `refund` del sender, que es la forma
+exacta del incidente que esta HU previene.
+
+-----------------------------------------------------------------------------
+QUÉ ES Y QUÉ NO ES
+-----------------------------------------------------------------------------
+- **No es una regresión de esta HU.** El mismo camino existe en el binario
+  desplegado: `Release.beneficiary` ya era `SystemAccount` antes de WKH-343.
+- **No es alcanzable desde el cliente real.** `chaski-v3` manda como
+  `beneficiary` la pubkey de una billetera (`solana-wallet.ts:410-417`), nunca la
+  dirección de una cuenta de programa. Requiere un cliente modificado.
+- **No hay robo:** los fondos vuelven con el refund del sender. Lo que se pierde
+  es la entrega, y el residuo es idéntico al del incidente.
+- **La forma B lo habría cerrado también.** El SDD comparó dos formas de
+  implementar el guard y eligió la A (el `beneficiary` sigue siendo un arg) por
+  costo: una cuenta menos y ningún código de error nuevo. Lo que esa comparación
+  NO vio es que la forma B declaraba `beneficiary: SystemAccount<'info>` en
+  `Deposit`, o sea que habría hecho que `deposit` exigiera lo mismo que `release`
+  exige — cerrando este segundo camino de paso. No cambia la decisión tomada (el
+  camino necesita un cliente modificado), pero es un argumento que faltaba en la
+  balanza y queda escrito.

@@ -1,0 +1,35 @@
+# wave:       W5 / M24
+# pasada:     1
+# fecha:      2026-08-10T09:05Z
+# commit:     000c96c39a02ad5c70580017625ca4e5fa2a13ab
+# lib.rs md5: 4904ecc950795662d8c4e7cca262247c   <- el arbol SANO, nunca se mutó para M24
+# baseline:   61 passing, 0 failing (la suite sana; M24 no se corrio)
+# discriminador: passing + failing = 61
+#
+# ===========================================================================
+# M24 -- NO APLICABLE. Y esto no es una omision: es la consecuencia de W0.2
+# ===========================================================================
+# M24 era, textual en el Story File §7.6: "(forma B) Borrar el `require_keys_eq!` del cuerpo".
+#
+# **No existe ningun `require_keys_eq!` que borrar, porque la forma B no se implemento.**
+#
+# El spike de W0.2 midio que `associated_token::authority = <arg de instruccion>` SI compila en Anchor
+# 1.1.2, asi que se fue por la **forma A**: una cuenta nueva, CERO codigos de error nuevos y ningun
+# cruce imperativo en el cuerpo del handler. La evidencia esta en w0-spike-form-a.txt, con la salida
+# del compilador y el md5 del .so moviendose.
+#
+# La forma B habria necesitado DOS cuentas nuevas (`beneficiary: SystemAccount` + `beneficiary_ata`),
+# un `ErrorCode` nuevo (`BeneficiaryMismatch`, 6009) y el `require_keys_eq!` en el cuerpo para cruzar
+# la cuenta contra el argumento. M24 era el mutante que probaba que ese cruce existia.
+#
+# POR QUE LA FORMA A NO NECESITA ESE MUTANTE, y es el punto que importa: en la forma A no hay dos
+# fuentes de verdad que puedan discrepar. La constraint deriva la ATA **del argumento
+# `beneficiary`**, que es literalmente el mismo valor que el handler graba en `escrow.beneficiary`.
+# No hay una cuenta `beneficiary` separada que pueda decir una cosa mientras el arg dice otra, asi
+# que el modo de falla que M24 vigilaba (validar la ATA de Y y grabar X) **no es representable**.
+# Verificable en el IDL: la primera seed de `beneficiary_ata` es {"kind": "arg", "path": "beneficiary"}.
+#
+# ⛔ Lo que NO se hizo: implementar la forma B para poder reportar un M24 en verde. Habria sido
+# agregar codigo muerto y un codigo de error nuevo (violando CD-13) para llenar una fila de tabla.
+
+=== no hay captura: el mutante no es aplicable (ver arriba) ===

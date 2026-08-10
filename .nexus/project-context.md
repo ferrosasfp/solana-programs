@@ -60,7 +60,10 @@ anchor test --skip-build --skip-deploy --skip-local-validator
 cargo clippy --all-targets -- -D warnings
 ```
 
-Última corrida medida: **55 passing**, ~4 s (README.md:769).
+Última corrida medida: la cifra vive en el renglón "Last measured run" de la sección
+"Running the tests" del README. Se cita por **título de sección** y no por número de línea a
+propósito: la cita anterior decía `README.md:769` y ya estaba corrida (el texto estaba en `:772`),
+porque un número de línea se desplaza cuando alguien edita tres líneas más arriba y un ancla no.
 
 `cargo fmt` **no** corre y **no** está enforced: el árbol no pasa `cargo fmt --all -- --check` hoy
 (README.md:903-908). No reformatear el programa como efecto colateral de otra HU.
@@ -120,13 +123,16 @@ cargo clippy --all-targets -- -D warnings
 
 | Consumidor | Qué hace contra este programa | Archivo |
 |---|---|---|
-| `chaski-v3` | arma **sólo** `deposit` (partial-signed por la wallet) | `src/infrastructure/solana-wallet.ts:315-322` |
+| `chaski-v3` | arma **sólo** `deposit` (partial-signed por la wallet) | `src/infrastructure/solana-wallet.ts:410-417` |
 | `wasiai-facilitator` | firma `release` y lee `EscrowState` | `src/chains/solana-escrow.ts` |
 
 Los dos vendorean el IDL y **pinnean su sha256 canónico**, desde el re-pin del 2026-08-05
 (`chaski-v3` `bd85dfa`, `wasiai-facilitator` `f9bddce`)
 `bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, que es el mismo que devuelve
-`anchor idl fetch` y el que construye este árbol (el anterior era `fb64c937…`):
+`anchor idl fetch` (el anterior era `fb64c937…`). ⚠️ **Y ya NO es el que construye este árbol**: la
+rama de WKH-343 le agrega una cuenta a `deposit`, así que el hash del árbol se movió y vive en un solo
+lugar, `doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md`. Mientras eso no se
+despliegue, los tests de hash de los dos consumidores están rojos **a propósito**:
 
 - `chaski-v3/contracts/idl/escrow-idl.hash.test.ts:22` + `chaski-v3/contracts/CONTRACT-VERSIONS.md`
   (hay un test que exige que el doc publique exactamente la constante, `:107-142`)
@@ -142,8 +148,8 @@ escriben desde acá.
 
 | Workflow | Qué hace | Estado |
 |---|---|---|
-| `.github/workflows/ci.yml` | clippy `-D warnings`, `anchor build`, las 55 pruebas | verde |
-| `.github/workflows/verified-build.yml` | rebuild en el contenedor pinneado + compara contra devnet | verde |
+| `.github/workflows/ci.yml` | clippy `-D warnings`, `anchor build`, la suite completa de pruebas | verde |
+| `.github/workflows/verified-build.yml` | rebuild en el contenedor pinneado + compara contra devnet | **rojo esperado** mientras el árbol lleve WKH-343 sin desplegar: el rebuild ya no reproduce devnet, y eso es el job funcionando |
 
 `verified-build.yml` tiene una bandera declarada, `SOURCE_REPRODUCES_CHAIN`, hoy en `true`. **No es
 un mute switch**: en `false` el job *exige* que el rebuild difiera de devnet, así que desplegar y

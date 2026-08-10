@@ -1125,6 +1125,17 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
 
   it("20. the other five instructions keep their accounts, args and discriminator (AC-9)", () => {
     const expected: Record<string, string[]> = {
+      // WKH-343 — `beneficiary_ata` entra AL FINAL, después de `system_program`. La posición no es
+      // cosmética: cada índice que un cliente ya construye conserva su número, así que un binario
+      // viejo que reciba esta cuenta la deja en `remaining_accounts` y la ignora. Es la misma regla
+      // que aplicó CD-15 para `escrow_index` en `close` (test 19, arriba).
+      //
+      // Esta lista sigue siendo un `deep.equal`, o sea que pinnea ORDEN y CANTIDAD, no pertenencia.
+      // Lo que la vuelve roja, y es a propósito: mover `beneficiary_ata` de la última posición,
+      // agregar una cuenta, o sacarla. Es el alambre que hace que un reordenamiento no pase
+      // desapercibido, porque del otro lado hay consumidores que pinnean `deposit` POR POSICIÓN
+      // (chaski-v3 contracts/idl/escrow-idl.hash.test.ts) y una tx mal armada se rechaza en
+      // producción sin que el depósito se broadcastee.
       deposit: [
         "sender",
         "mint",
@@ -1134,6 +1145,7 @@ describe("escrow-index — enumerable per-sender escrow index (HU-SOL-20)", () =
         "token_program",
         "associated_token_program",
         "system_program",
+        "beneficiary_ata",
       ],
       release: [
         "authority",

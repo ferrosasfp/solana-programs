@@ -5,11 +5,17 @@ Right now the explorer shows this program as raw bytes. Publishing the IDL is wh
 arguments, for anybody looking at a transaction without cloning the repository.
 
 **Executed on 2026-08-01, and again on 2026-08-05 after the WKH-326 deploy.** The IDL is published.
-`anchor idl fetch` returns it, and its canonical sha256 is
-`bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, the same value this repository
-builds and the same one pinned in `chaski-v3` and `wasiai-facilitator`. The number it replaced,
-`fb64c937...`, is the 2026-08-01 one and appears below wherever this document describes that first
-publication.
+`anchor idl fetch` returns it, its canonical sha256 is
+`bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, and that is the value pinned in
+`chaski-v3` and `wasiai-facilitator`. The number it replaced, `fb64c937...`, is the 2026-08-01 one and
+appears below wherever this document describes that first publication.
+
+⚠️ **What that hash is NOT: what this tree builds.** It was, until WKH-343 added an account to
+`deposit`. This sentence used to say "the same value this repository builds", which contradicted the
+row further down in this same document that says it is **no longer** the same value — one file with two
+answers to "which hash do I pin". The hash this tree builds lives in exactly one place,
+`doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md`, and is deliberately not
+repeated here.
 
 **The command in this document does not work, and the way it fails is worth knowing.** See
 [What actually worked](#what-actually-worked) at the end. The rest of the document is kept as it was
@@ -40,18 +46,28 @@ still makes the IDL fetchable by any client (`anchor idl fetch`, the `program-me
 anything built on them) and that is worth doing on its own. Check the explorer afterwards rather
 than assuming the labels appear.
 
-## Current state, as read from devnet
+## State as measured on devnet on 2026-08-10, at slot `482579471`
+
+This table used to describe the moment *before* the IDL was ever published, and said the account did
+not exist. It does exist. Every row below is a measurement with its slot, not a standing claim.
 
 | | |
 |---|---|
 | Canonical IDL account | `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC` |
-| Exists? | **No.** `anchor idl fetch` returns `Account not found at address` |
+| Exists? | **Yes**, measured at slot `482579471`: owner `ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S`, 5292 bytes. It was published on 2026-07-28 and republished on 2026-08-05 right after the WKH-326 program deploy. |
 | Derivation | PDA of `ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S`, seeds `[program_id, "", "idl" padded to 16 bytes]`, bump 253 |
 | IDL to upload | `target/idl/escrow.json`, produced by `anchor build` |
-| Canonical sha256 of that IDL | `fb64c937dbdab7a58045e663a85724808c4539707fedbdf244e11a28dbe5c071` |
+| Canonical sha256 of what is **on chain** | `bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922` — this is also the value both consumers pin. The row previously published `fb64c937…`, which was superseded on 2026-08-05 and had been left behind here. |
+| Canonical sha256 of what **this tree builds** | **No longer the same value**, and deliberately not repeated here. This tree carries WKH-343, which adds one account to `deposit`, so `anchor build` produces a different IDL. The new hash is recorded in `doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md`, in exactly one place, and is **not** re-pinned in any consumer from here. |
 
 The address and the bump were recomputed from the derivation and match what `anchor idl fetch`
 looked up, so the account above is the one the tooling will read.
+
+⚠️ **Republishing the IDL is not part of WKH-343 and has not been done.** The account still serves the
+IDL of the binary that is actually deployed, which is the correct state while the program change is
+undeployed: an on-chain IDL describing a binary that is not running would be worse than a stale one.
+Republication belongs to the deploy step, whose gate is in
+`doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/runbook-deploy.md`.
 
 ## The command
 
@@ -143,7 +159,11 @@ were updated in the workflow and the README, the IDL was republished through the
 3 still fails the documented way), and the two consumers were re-pinned last, `chaski-v3` at
 `bd85dfa` and `wasiai-facilitator` at `f9bddce`. Both now pin
 `bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, which is what `anchor idl fetch`
-returns and what `anchor build` produces in this tree.
+returns. ⚠️ It is **no longer** what `anchor build` produces in this tree — WKH-343 moved that value,
+and it is recorded only in
+`doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md`. This paragraph describes the
+2026-08-05 run, and at that moment the two coincided; the sentence is kept in the past tense on
+purpose, because the re-pin of each consumer is that repo's decision and has not happened.
 
 ## What actually worked
 

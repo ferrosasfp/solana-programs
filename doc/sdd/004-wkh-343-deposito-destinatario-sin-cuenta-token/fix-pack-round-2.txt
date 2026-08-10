@@ -1,0 +1,309 @@
+WKH-343 — fix pack, RONDA 2
+=============================================================================
+Los 4 BLOQUEANTE-BAJO y los 5 MENOR del AR focalizado. Fecha: 2026-08-10.
+
+⚠️ SOBRE LOS DIGESTS DE ESTE ARCHIVO (corrige el MNR-3 de la ronda 1): todos los
+md5/sha256 de acá se midieron DESPUES de la ultima edicion de cada archivo, y la
+seccion 9 los repite al cierre. En la ronda 1 declare el md5 del script
+(`79a7cb24…`) y despues lo segui editando: 9 segundos mas tarde ya era otro, asi
+que esa seccion describia un archivo que no era el que se iba a desplegar. Un
+digest en el medio de un documento es una afirmacion con fecha de vencimiento.
+
+-----------------------------------------------------------------------------
+1. BLQ-BAJO-2 — el gate ya no le da el alta a un barrido que no miro nada
+-----------------------------------------------------------------------------
+El exit code contaba 2 condiciones; ahora cuenta 5, y las 5 se imprimen SIEMPRE en
+stdout (con o sin la bandera). Las tres nuevas son casos que el script ya IMPRIMIA
+y descartaba al devolver:
+
+  - status byte desconocido (MNR-2): caia en "terminal, nothing to drain", que es
+    justo la lectura que lo vuelve invisible, porque los terminales quedan fuera de
+    `unpayable`. `terminal` es ahora una LISTA BLANCA (1, 2) y lo desconocido no
+    entra.
+  - 0 cuentas observadas: un `--program-id` valido pero equivocado, un `--idl` de
+    otro build o el cluster equivocado imprimen "0 accounts found" y salian 0.
+  - el reloj del cluster no se pudo leer (BLQ-BAJO-3, abajo).
+
+Y `--url` se valida: antes cualquier string se pasaba como URL. Ahora tiene que ser
+un nombre de la tabla de clusters o empezar con http:// o https://.
+
+MEDIDO EN VIVO contra devnet (los tres con --exit-nonzero-if-blocking):
+
+    --program-id 11111111111111111111111111111111  (valido, equivocado)
+        exit 1, y la razon impresa:
+        "NOTHING WAS OBSERVED: 0 escrow_state accounts matched. Either this program
+         has no escrows, or the program id / IDL / cluster is wrong. This script
+         cannot tell those apart, so it refuses to pass"
+    el mismo SIN la bandera: exit 0, y el script lo dice:
+        "(Exit status is 0 because --exit-nonzero-if-blocking was not given. With it,
+          this run would exit 1.)"
+    --url devnett  ->  exit 1 con
+        "--url must be one of devnet, localhost, mainnet, mainnet-beta, testnet or an
+         http(s) URL; got 'devnett'"
+    corrida normal contra devnet: exit 0, "Nothing here blocks"
+
+Y el CONTRAFACTUAL, que es lo que mide cuanto compra el arreglo: se desactivo SOLO
+esa condicion en el script que se entrega (sha256 distinto verificado antes de
+correr, restaurado desde respaldo propio con sha256 igual al original al final) y se
+le dio el MISMO input:
+
+    entregado                        0 cuentas observadas -> exit 1
+    sin la condicion "nada observado" 0 cuentas observadas -> exit 0   <- el defecto
+
+⚠️ Lo que esto NO hace: no distingue "este programa no tiene escrows" de "le
+pregunte al programa equivocado". No puede. Por eso falla cerrado y deja la
+confirmacion en manos del operador, en vez de confirmarlo el.
+
+-----------------------------------------------------------------------------
+2. BLQ-BAJO-3 — el tercer desenlace del reloj ya no se colapsa en el $?
+-----------------------------------------------------------------------------
+`cluster_now()` devolvia TRES estados para el slot y DOS para el timestamp: si
+`getBlockTime` daba `null`, sustituia el reloj LOCAL y seguia. Todos los veredictos
+de deadline son comparaciones contra ese numero.
+
+MEDIDO con el MISMO escrow y el MISMO codigo, moviendo una sola cosa. El escrow es
+FABRICADO byte a byte en el layout del programa y servido por un `rpc` stubeado
+(en devnet no hay ninguno `Deposited` y vencido: los 10 son terminales); lo que es
+real es `main()` sin tocar. El deadline cae ENTRE los dos relojes: pasado para el del
+cluster, futuro para el local.
+
+    script ENTREGADO
+      getBlockTime ok   -> "REFUND-ONLY: the release window closed at ..."   exit 1
+      getBlockTime null -> "live, still inside its release window"           exit 1
+                           razon: "the CLUSTER CLOCK was not read, so every deadline
+                           verdict above compares against this host's local clock"
+
+    CONTRAFACTUAL: la misma corrida con la condicion del reloj desactivada
+      getBlockTime ok   -> "REFUND-ONLY: ..."                                exit 1
+      getBlockTime null -> "live, still inside its release window"           exit 0  <- el defecto
+
+O sea: el veredicto sigue cambiando —el script no puede saber la hora real— pero ya
+NO sale 0. El humano veia el aviso `[LOCAL clock]` en el encabezado; el `$?` no, y el
+`$?` lo volvi portante en la ronda 1. `cluster_now` devuelve ahora un cuarto valor,
+`trusted`. Cuando el slot SI se leyo y solo fallo el block time se conservan las dos
+cosas: el slot sigue estampando la salida y `trusted` queda en False.
+
+Ninguno de los dos casos es exotico: `getBlockTime` devuelve `null` en slots
+podados o no rooteados de un endpoint publico, y un reloj de contenedor que deriva
+es lo normal.
+
+-----------------------------------------------------------------------------
+3. BLQ-BAJO-1 — una ATA CONGELADA ya no da `yes`, y costo cero llamadas
+-----------------------------------------------------------------------------
+`state` viene en la MISMA respuesta que el script ya pedia. Se lee.
+
+Los dos `NO` se distinguen porque QUIEN LOS ARREGLA no es el mismo:
+
+    ausente : una transaccion, la paga cualquiera, sin firma del beneficiario
+    congelada: nadie de nuestro lado. Las constraints de Anchor PASAN (compara owner
+              y direccion, nada mas: anchor-syn 1.1.2 constraints.rs:1313-1322), asi
+              que el release SE PUEDE ARMAR, y lo que revierte es la transferencia
+              SPL con AccountFrozen. Solo la freeze authority del mint puede
+              descongelarla.
+
+MEDIDO contra devnet, al slot 482622803: las 6 filas que dan `yes` ahora imprimen el
+estado que leyeron, y la ATA real del beneficiario para el mint nuestro
+(BQC6fXinyR4KnESJso1oY8nnbQjXjbFAJb221V7UkiVe, saldo 12 500 000) esta en
+`state: initialized`, o sea NO congelada. El campo se lee de verdad, no se asume: si
+viniera `frozen`, la fila diria `**NO** (frozen)`.
+
+⚠️ Lo que este chequeo NO mira: el estado del VAULT. Pregunta por la cuenta del
+BENEFICIARIO, que es la que `release` exige. Un vault congelado traba igual el
+release y el refund, y eso sigue sin instrumento.
+
+Y el riesgo no es teorico: el mint de Circle TIENE freeze authority
+(`CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT`, que no es nuestra) y el nuestro la
+tiene en `null`.
+
+Lo que mas importa de este hallazgo: el `///` de `Deposit.mint` —el que viaja al
+IDL— YA DECIA que una token account congelada rechaza toda transferencia. El repo lo
+sabia y el instrumento no lo preguntaba.
+
+-----------------------------------------------------------------------------
+4. BLQ-BAJO-4 — las tres frases del mint, corregidas, INCLUIDO el `///`
+-----------------------------------------------------------------------------
+En la ronda 1 escale esto en vez de arreglarlo, con el argumento de que corregir el
+`///` mueve el hash del IDL. El argumento era malo y la refutacion estaba escrita
+nueve lineas mas arriba, en el mismo comentario que yo habia editado: el hash de
+esta HU se mueve POR CONSTRUCCION y la ventana esta abierta.
+
+Lo que decidio: el costo es ASIMETRICO. El IDL nuevo NO se publico —las dos mitades
+del gate de W6 siguen sin cumplirse— asi que corregir hoy cuesta un rebuild.
+Publicarlo con la frase falsa adentro la inmortaliza en cadena, y ahi corregirla
+cuesta un upgrade de IDL. La decision de la ronda 1 convertia una correccion barata
+en una cara.
+
+Las tres, con la redaccion honesta ("el control existe en el co-firmante y cubre
+solo los depositos que pasan por el"):
+
+    programs/escrow/src/lib.rs   el `//` de la nota  +  el `///` de Deposit.mint
+    README.md                    la seccion "The mint"
+    runbook-deploy.md            "No valida el mint ... y sigue sin hacerse"
+
+El control: `wasiai-facilitator/src/methods/solana-sponsor/cr1.ts:281-282` compara
+el mint contra `SOLANA_USDC_MINT` y responde `MINT_MISMATCH`. Commit `e14383f`
+(2026-08-04), ancestro de `origin/main` (verificado con `git merge-base
+--is-ancestor`). Estaba TRES lineas arriba del bloque que yo cite para MNR-5
+(`:285-288`): tenia la refutacion en pantalla mientras escribia la cita.
+
+NO MEDIDO, y queda escrito en los tres lugares: si el servicio DESPLEGADO en
+produccion corre ese commit. Se leyo el repo, no el deploy.
+
+MEDIDO sobre el IDL construido, que es donde el AR encontro la frase:
+
+    "NO hay hoy ningun control que rechace un mint inesperado"   -> AUSENTE
+    "no compara el mint contra nada"                             -> AUSENTE
+    "DONDE VIVE EL CONTROL"                                      -> PRESENTE
+    "cubre solo los que pasan por el"                            -> PRESENTE
+
+Y lo que NO se movio en el IDL: discriminador de `deposit`
+[242,35,198,137,82,225,242,182], sus 5 args, sus 9 cuentas en orden, las 6
+instrucciones, y los 9 errores 6000..6008 con ReleaseWindowClosed al final.
+
+-----------------------------------------------------------------------------
+5. MNR-4 — 13 -> 5 llamadas RPC (-62%), memoizando por (beneficiary, mint)
+-----------------------------------------------------------------------------
+La respuesta es una propiedad del par, no del escrow, y los 10 escrows comparten 2
+pares. MEDIDO con el mismo contador de la ronda 1:
+
+    version vieja (HEAD)      13   (getTokenAccountsByOwner 10)
+    ronda 1                   13   (getTokenAccountsByOwner 10)
+    ronda 2, memoizado         5   (getTokenAccountsByOwner  2)   main() -> 0
+
+Es la mitigacion del 429 que yo mismo provoque en la ronda 1, y mejora cuanto mas
+escrows comparten beneficiario, que es la forma real del trafico de este programa.
+No cambia el predicado.
+
+⚠️ EL COSTO DEL MEMO, medido y escrito en el codigo: su vida es el PROCESO y no tiene
+invalidacion. Para este script es lo correcto (un barrido, una foto de la cadena, y
+sale; un barrido cuyas filas se contradijeran entre si sobre el mismo par seria peor
+que uno lento). Pero es un footgun para cualquiera que IMPORTE el modulo y pregunte
+dos veces: lo detecto mi propia sonda de la ronda 1, que re-stubea el `rpc` al estado
+opuesto entre escenarios y empezo a fallar dos aserciones porque recibia la respuesta
+cacheada del escenario anterior. La sonda ahora limpia el cache entre escenarios y el
+docstring dice que hay que hacerlo.
+
+Y la sonda de la ronda 1 tambien se actualizo por otra razon, que es MNR-3 otra vez:
+`exit_code()` cambio de firma (ahora decide sobre `exit_reasons()`), asi que la sonda
+tal como estaba fallaba con `TypeError` y su seccion 4 describia una API que ya no
+existe. Una evidencia que no corre contra el arbol actual no es evidencia.
+
+-----------------------------------------------------------------------------
+6. MNR-5 — las ~70 lineas de cripto a mano YA TIENEN GUARDIAN, y corre solo
+-----------------------------------------------------------------------------
+`scripts/derivation-selftest.py`, cableado en `.github/workflows/ci.yml` al lado de
+clippy (sin toolchain, sin red, sin cluster). Si no estuviera en el workflow no
+existiria: un test que nadie llama es un archivo, no un control.
+
+Vectores, y ninguno es la salida de este script: los 2 pares REALES de devnet, 7
+pares de BUMP BAJO (248..242, con direccion Y bump, generados con
+findProgramAddressSync), la divergencia dalek/RFC8032 como INVARIANTES (bit 255 no
+cambia la respuesta; y `y` en [p, 2^255) se comporta como `y - p`), round trips de
+base58 con ceros a la izquierda, y que el bucle nunca devuelve bump 0.
+
+⚠️ Y se probo que PUEDE FALLAR, que es lo unico que separa un guardian de un
+adorno. Seis mutaciones de la derivacion, cada una con sha256 distinto al original
+antes de correr, restauradas desde respaldo propio (no `git checkout`) con sha256
+verificado igual al original al final:
+
+    M-A bucle 255..1 -> 1..255 (direccion invertida)      KILLED (16 fallas)
+    M-B is_on_curve sin la mascara de 255 bits            KILLED (13 fallas)
+    M-C orden de seeds owner/mint invertido               KILLED  (2 fallas)
+    M-D TOKEN_PROGRAM_ID -> Token-2022                    KILLED  (2 fallas)
+    M-E sin el marcador "ProgramDerivedAddress"           KILLED (16 fallas)
+    M-F sha256 -> sha512 truncado a 32                    KILLED (16 fallas)
+
+    restored sha256 == original: True
+    selftest sobre el arbol restaurado: exit 0
+
+M-B es el que justifica los invariantes de la seccion 3 del test: sin ellos, quitar
+la mascara pasaria desapercibido en los vectores de direccion.
+
+-----------------------------------------------------------------------------
+7. MNR-1 y MNR-2 (ya en la seccion 1) y las correcciones de prosa
+-----------------------------------------------------------------------------
+MNR-1: el bucle iba hasta 0 y el runtime va 255..1. Corregido, y el docstring que
+decia "the same way the runtime derives it" ahora es cierto. La ventana era 2^-255 y
+en direccion inocua; se arregla porque la frase es falsable, no porque el riesgo lo
+justifique.
+
+Y dos correcciones que el AR aporto y quedan escritas en el codigo:
+  - un digest cae ON-CURVE ~50% de las veces, no 1 en 256. Los 500 pares de la
+    ronda 1 ejercitaban el bucle ~250 veces; la premisa de que "500 aleatorios no lo
+    ejercitan" era falsa.
+  - en 5 de 19 vectores de encoding el script NO coincide con `@solana/web3.js`, y
+    EL SCRIPT TIENE RAZON: web3.js valida RFC8032 estricto, el runtime usa dalek.
+    Esta escrito en el docstring de `is_on_curve`, con la ventana (2^-255) y con el
+    criterio: un chequeo que predice la cadena sigue a la cadena.
+
+-----------------------------------------------------------------------------
+8. Lo que sigue sin verificar
+-----------------------------------------------------------------------------
+- Si el `wasiai-facilitator` DESPLEGADO corre `e14383f`. Se leyo el repo.
+- exit 1 por 429 es indistinguible de exit 1 por "hay escrows bloqueantes". La razon
+  se lee de stdout, que siempre la imprime. Anotado en el runbook y en el docstring.
+- El guardian de la derivacion cubre la DERIVACION. No cubre que
+  `Release.beneficiary_ata` siga declarada con `associated_token::`: si alguien la
+  cambiara a `token::`, el programa aceptaria cuentas que este script llama NO y
+  nada lo avisaria. Sigue siendo trabajo de quien revisa.
+- W6 NO se ejecuto. Las 4 decisiones del founder siguen abiertas. La mitad (ii) del
+  gate sigue sin cumplirse: la ATA canonica del beneficiario para el mint de Circle
+  (`Cq9AinM9WCry8Pyk5EsFJ2hdQomKAUES7Cq7YLunRGMC`) no existe al slot 482620696.
+
+-----------------------------------------------------------------------------
+9. LA CADENA SE MOVIO DURANTE ESTA RONDA, y la condicion nueva se disparo sola
+-----------------------------------------------------------------------------
+Entre los slots 482620696 y 482622899 —con este fix pack abierto— entro un deposito
+nuevo en devnet:
+
+    escrow      5G4Zaa4RkMysquGpm61ENinp8kzo7Uu3kvpBAxFFwy4
+    status      Deposited
+    amount      5 000 000 raw   mint 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU (Circle)
+    sender      4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P
+    beneficiary Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq
+    deadline    2026-08-10 12:55:42Z (en el futuro al medirlo)
+    beneficiary can receive: NO -- la ATA canonica Cq9AinM9WCry8Pyk5EsFJ2hdQomKAUES7Cq7YLunRGMC no existe
+
+Es el incidente que esta HU previene, **repitiendose contra el binario DESPLEGADO**,
+que no tiene el guard: el guard vive en `deposit` y el deploy no corrio.
+
+Y es la validacion no planificada de la ronda 1: la condicion `unpayable` —que antes
+se imprimia y se descartaba al devolver— **se disparo con datos reales**. El barrido
+con `--exit-nonzero-if-blocking` devolvio **1**, y antes de este fix pack habria
+devuelto 0 con el mismo escrow trabado en pantalla.
+
+Lo que se actualizo por esto (y NO es "arreglar" nada del codigo):
+    README.md   la fila "Money at risk" y la tabla pegada (11 filas, verbatim
+                re-verificado linea por linea: 15 lineas, 0 diferencias) + los tres
+                parrafos que contaban 10 cuentas y "todas terminales"
+    runbook     el paso 4.1, cuyo propio numero ("0 en Deposited") ya estaba viejo
+
+⚠️ Y es la demostracion de que "pegar la salida de un comando" NO impide que el
+documento envejezca: baja el costo de refrescarlo. El mutante que restaura el
+comportamiento viejo sigue siendo que nadie corra el comando.
+
+-----------------------------------------------------------------------------
+10. Digests, medidos al cierre (ver el aviso del encabezado)
+-----------------------------------------------------------------------------
+Medidos DESPUES de la ultima edicion de cada archivo:
+
+    target/deploy/escrow.so         md5 1588018c0cc754db49462f93054455c9  (276 800 bytes)
+    target/idl/escrow.json          md5 25b498214df3f6f87a936b3e536b290b
+    programs/escrow/src/lib.rs      md5 15c8d5ecea1babd3f029b8bcce0798ed
+    sha256 canonico del IDL         d295b7c74ff9a2ac758e24cc9e7d32d3c09d5943e1b137ef67f4f2692993c70e
+
+Los tres md5 y el canonico coinciden con lo que declaran `idl-hash.md` y
+`mutation-run.md`. El canonicalizador se controlo antes, reproduciendo `fbf2214b…`
+sobre el IDL de la ronda 1.
+
+Controles finales, todos en verde:
+    suite (61 tests)                              61 passing
+    cargo clippy --all-targets -- -D warnings     exit 0
+    scripts/derivation-selftest.py                exit 0  (y 6 mutantes en rojo)
+    sonda diferencial de la ronda 1               ALL CHECKS OK
+    citas propias verificadas por contenido       33/33 OK (24 por linea+contenido,
+                                                  3 por nombre sin numero, 5 rutas,
+                                                  1 que ci.yml invoque el guardian)
+    barrido de desplazamiento                     1 sola cita atribuida al fix pack, y
+                                                  su ancla en HEAD ya estaba en blanco
+                                                  (reporte cerrado de WKH-326)

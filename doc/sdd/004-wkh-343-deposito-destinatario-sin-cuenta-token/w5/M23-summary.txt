@@ -1,0 +1,754 @@
+# wave:       W5 / M23
+# pasada:     1
+# fecha:      2026-08-10T09:03Z
+# commit:     000c96c39a02ad5c70580017625ca4e5fa2a13ab
+# lib.rs md5: 4904ecc950795662d8c4e7cca262247c   <- el arbol RESTAURADO (referencia 4904ecc950795662d8c4e7cca262247c)
+# baseline:   10 passing, 51 failing   <- CON EL MUTANTE APLICADO (la baseline sana es 61 passing, 0 failing)
+# discriminador: passing + failing = 61
+#
+# ---------------------------------------------------------------------------
+# CONTROL DE APLICACION, que es lo que separa "sobrevivio" de "no lo aplique"
+# ---------------------------------------------------------------------------
+# sha256 de lib.rs CON el mutante : aefe88a8d3f19192168c981017a4795230c1b825473d85d80f8ba2ea223e9c16
+# sha256 de lib.rs original        : 52dd64c8ea6047f4f2925812d4de479c1ed8aa53ee7a4f98696e4f95f0f9b2be
+# DIFIEREN -> el mutante estaba REALMENTE aplicado cuando corrio lo de abajo.
+#
+# Sin este control, un mutante NO APLICADO y uno que SOBREVIVE dan la MISMA salida verde,
+# y la conclusion de cada uno es la opuesta.
+#
+# ---------------------------------------------------------------------------
+# CONTROL DE RESTAURACION (despues de este mutante)
+# ---------------------------------------------------------------------------
+# git checkout -- programs/escrow/src/lib.rs   y luego  git diff HEAD  ->  VACIO (0 bytes)
+# anchor build  ->  0 lineas "error"
+# los 3 md5, comparados contra la referencia y NO supuestos:
+#   target/deploy/escrow.so      b024cd91d03d6cec8fcbb5bf34884c23   OK
+#   target/idl/escrow.json       26b2685ce861b04e22322b6d52430836   OK
+#   programs/escrow/src/lib.rs   4904ecc950795662d8c4e7cca262247c   OK
+# La restauracion se prueba con git contra HEAD, NUNCA con un respaldo en el scratchpad:
+# ese directorio puede desaparecer entre dos comandos.
+#
+# ===========================================================================
+# M23 -- `associated_token::mint/authority`  ->  `token::mint/authority`
+# ===========================================================================
+# QUE RESTAURA: un guard que acepta CUALQUIER token account del beneficiario con ese mint, incluida
+# una que NO es la ATA canonica. `release` exige la canonica, asi que el guard dejaria de predecir lo
+# que `release` va a hacer, que es el unico motivo por el que el guard sirve (CD-6).
+#
+# RESULTADO: KILLED, y de la forma mas ruidosa posible: 10 passing, 51 failing.
+#
+# ⚠️ EL MECANISMO NO ES EL QUE PREDECIA EL STORY FILE, y sin medirlo se saca la conclusion equivocada.
+# §7.6 esperaba que murieran T11 y T13 (los casos de la ATA no canonica). Mueren, pero se cae ademas
+# casi toda la suite, incluidas pruebas que no tienen nada que ver con el beneficiario (la ventana de
+# custodia, el canario de 154 bytes, el indice).
+#
+# LA CAUSA, medida y no supuesta: se rebuildeo con el mutante y se leyo el IDL. Bajo M23 la cuenta
+# `beneficiary_ata` queda en el IDL con UNA sola clave, `name`:
+#
+#     claves de beneficiary_ata bajo M23: ['name']
+#     tiene bloque pda? False
+#
+# Con `associated_token::` Anchor emite un bloque `pda` con las seeds, y es ESE bloque el que le
+# permite al cliente derivar la cuenta sin que nadie la nombre. Con `token::` no hay bloque `pda`, el
+# cliente ya no puede derivarla, y entonces **todo** `deposit` que no la nombre explicitamente falla
+# del lado del CLIENTE, antes de tocar la cadena. Como casi todos los tests depositan, casi todo muere.
+#
+# ESTO CONFIRMA W2.3 DESDE EL LADO OPUESTO, y es el mismo hecho medido dos veces:
+#   con `associated_token::`  -> hay bloque `pda` -> el cliente deriva -> la suite pasa sin tocar
+#                                ninguno de los 4 builders de `deposit`
+#   con `token::`             -> no hay bloque `pda` -> el cliente no puede derivar -> 51 fallos
+# O sea que la derivacion automatica del cliente no es una comodidad: es una consecuencia de haber
+# elegido `associated_token::`, la misma eleccion que CD-6 exige por un motivo de seguridad.
+
+=== captura cruda ===
+
+
+Found a 'test' script in the Anchor.toml. Running it as a test suite!
+
+Running test suite: "/home/ferdev/.openclaw/workspace/wt-wkh343/Anchor.toml"
+
+
+
+  escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+    ✔ 1b. a hand-built 154-byte legacy escrow_state is still refundable by the new program (AC-6)
+    1) 2. deposit + register_escrow creates the index PDA with the right header and entries (AC-3)
+    2) 3. the sender recovers a forgotten escrow from the index alone and refunds it (AC-4)
+    ✔ 4a. IDL: exactly 6 instructions, and neither new instruction takes an `authority` account (AC-5/CD-1)
+    3) 4b. an attacker cannot register the victim's escrow into any index (AC-5)
+    4) 4c. an attacker cannot deregister entries from the victim's index (AC-5)
+    5) 5. registering MAX_ENTRIES escrows works and the next one reverts with EscrowIndexFull
+    6) 6. registering the same id twice does not duplicate and does not revert (idempotent)
+    7) 7. deregister_escrow removes only the target entry, moves no tokens, and is a no-op if absent
+    ✔ 8a. register_escrow on a never-deposited escrow reverts (AccountNotInitialized)
+    8) 8b. register_escrow on an already Released escrow reverts (EscrowNotDeposited)
+[T10] rent(558 bytes EscrowIndex) = 4774560 lamports (0.00477456 SOL)
+[T10] rent(154 bytes EscrowState)  = 1962720 lamports (0.00196272 SOL)
+    9) 10. rent-exemption cost of the index is measured against the SDD estimate
+    10) 11. deposit + register_escrow in ONE atomic tx: report computeUnitsConsumed
+    11) 12. close removes exactly the entry of the escrow it closes and leaves the rest in order (AC-1)
+    12) 13. close with escrowIndex=null confirms and does NOT create the index account (AC-2)
+    13) 13b. leaving the escrowIndex key out does NOT omit the account: the client sends the PDA (CD-14)
+    14) 13c. close with escrowIndex=null when the index HOLDS the id confirms and leaves the entry dangling
+    15) 14. 33 deposit→register→release→close cycles with the SAME sender all succeed (AC-3)
+    16) 15. close with the VICTIM's index reverts ConstraintSeeds and leaves that index untouched (AC-4)
+    17) 16. close with the index moves exactly the same tokens as before the change (AC-5)
+    18) 17. close on a Deposited escrow reverts EscrowNotTerminal and removes no entry (AC-6)
+    19) 18. close with an index that does not contain the id confirms and leaves entries alone (AC-7)
+    ✔ 19. the built IDL declares 6 instructions, the 6 usual discriminators, and escrow_index last in close (AC-8)
+    ✔ 20. the other five instructions keep their accounts, args and discriminator (AC-9)
+    20) 21. close with and without the index: report computeUnitsConsumed
+
+  escrow-window — the custody window and the status guard
+    21) A1. a deposit with a one-second deadline reverts (DeadlineTooSoon) and nothing is custodied
+    22) A1b. a deposit one second BELOW the floor reverts, and exactly AT the floor is accepted
+    23) A2. a deposit with deadline = i64::MAX reverts (DeadlineTooFar) — the funds-with-no-exit case
+    24) A2b. a deposit one second ABOVE the ceiling reverts, and exactly AT the ceiling is accepted
+    25) A2c. the ceiling is measured against the CLOCK, not against the deposit slot
+    26) B1. at t = deadline - 1 only release is legal: the refund reverts (DeadlineNotReached)
+    27) B2. at t = deadline EXACTLY only refund is legal: the release reverts (ReleaseWindowClosed)
+    28) B3. across the whole edge, EXACTLY ONE of release and refund succeeds at every instant
+    29) B4. a release six days after the deadline reverts (ReleaseWindowClosed) and the sender can still refund
+    30) C1. a second release, with the vault REFILLED, reverts (EscrowNotDeposited): the beneficiary is not paid twice
+    31) C2. a refund on a RELEASED escrow, with the vault refilled and the deadline passed, reverts (EscrowNotDeposited)
+    32) C3. a second refund, with the vault refilled, reverts (EscrowNotDeposited): the sender cannot be paid twice either
+    ✔ C4. a release on a REFUNDED escrow whose window is still open reverts (EscrowNotDeposited)
+    33) D1. dust donated to the vault after the release no longer bricks the close: it is swept to the sender
+    34) D1b. the same holds after a refund: dust does not turn the close into a dead end
+    35) D2. a LIVE escrow cannot be closed, and with the sweep in place that whitelist is the only thing stopping an early exit
+    ✔ E1. the status byte means the same thing it always meant: 0, 1 and 2 keep their names
+    ✔ E1b. a status byte of 3 does NOT decode: the enum has exactly three variants and that is a contract with the consumers
+    ✔ E2. an account already sitting on chain as Released is still closable (its byte was not re-pointed)
+    ✔ E3. an account already sitting on chain as Refunded is still closable too
+
+  escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+    36) 1a. CANARY: a deposit produces an escrow_state of EXACTLY 154 bytes (AC-6/CD-7)
+    37) 1. deposit then release pays exactly the recorded beneficiary; vault drained; status Released
+    38) 2. release signed by a non-authority reverts (ConstraintHasOne); vault untouched
+    39) 3. refund before the deadline reverts (DeadlineNotReached); vault untouched
+    40) 4. refund after the deadline succeeds for the sender alone (authority never signs); status Refunded
+    41) 5. a second terminal transition reverts (EscrowNotDeposited) after release and after refund
+    42) 6. a second deposit on the same [sender, remittance_id] seeds reverts (account already in use)
+    43) 7. close while Deposited reverts (EscrowNotTerminal) — AC-8
+    44) 8. close after release returns rent + vault to sender, and the same seeds are reusable via a fresh deposit (anti-revival)
+    45) 9. deposit with amount == 0 reverts (ZeroAmount)
+    46) 10. deposit reverts when the beneficiary has NO token account for the mint; nothing is created and nothing moves (AC-1)
+    47) 11. deposit reverts when the account passed is the beneficiary's ATA for a DIFFERENT mint (ConstraintAssociated)
+    48) 12. deposit reverts when the account passed holds the right mint but belongs to SOMEBODY ELSE (ConstraintTokenOwner)
+    49) 13. regression of the incident, end to end: the rejected deposit becomes payable after ONE transaction
+    50) 14. a deposit carrying one EXTRA account past the end of the declared list still succeeds
+    51) 15. the beneficiary can CLOSE its ATA after a valid deposit, and then release reverts — the LIMIT of this guard
+
+
+  10 passing (3s)
+  51 failing
+
+  1) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       2. deposit + register_escrow creates the index PDA with the right header and entries (AC-3):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:485:15)
+
+  2) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       3. the sender recovers a forgotten escrow from the index alone and refunds it (AC-4):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:529:17)
+
+  3) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       4b. an attacker cannot register the victim's escrow into any index (AC-5):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:590:20)
+
+  4) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       4c. an attacker cannot deregister entries from the victim's index (AC-5):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:602:15)
+
+  5) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       5. registering MAX_ENTRIES escrows works and the next one reverts with EscrowIndexFull:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:624:17)
+
+  6) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       6. registering the same id twice does not duplicate and does not revert (idempotent):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:649:15)
+
+  7) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       7. deregister_escrow removes only the target entry, moves no tokens, and is a no-op if absent:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:670:15)
+
+  8) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       8b. register_escrow on an already Released escrow reverts (EscrowNotDeposited):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:721:15)
+
+  9) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       10. rent-exemption cost of the index is measured against the SDD estimate:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:758:15)
+
+  10) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       11. deposit + register_escrow in ONE atomic tx: report computeUnitsConsumed:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at MethodsBuilder.ix [as _ixFn] (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at MethodsBuilder.instruction (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:354:17)
+      at Context.<anonymous> (tests/escrow-index.ts:778:23)
+
+  11) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       12. close removes exactly the entry of the escrow it closes and leaves the rest in order (AC-1):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:821:15)
+
+  12) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       13. close with escrowIndex=null confirms and does NOT create the index account (AC-2):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:848:15)
+
+  13) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       13b. leaving the escrowIndex key out does NOT omit the account: the client sends the PDA (CD-14):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:871:15)
+
+  14) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       13c. close with escrowIndex=null when the index HOLDS the id confirms and leaves the entry dangling:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:912:15)
+
+  15) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       14. 33 deposit→register→release→close cycles with the SAME sender all succeed (AC-3):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:951:38)
+
+  16) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       15. close with the VICTIM's index reverts ConstraintSeeds and leaves that index untouched (AC-4):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:982:15)
+
+  17) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       16. close with the index moves exactly the same tokens as before the change (AC-5):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:1014:15)
+
+  18) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       17. close on a Deposited escrow reverts EscrowNotTerminal and removes no entry (AC-6):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:1041:15)
+
+  19) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       18. close with an index that does not contain the id confirms and leaves entries alone (AC-7):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:1063:15)
+
+  20) escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+       21. close with and without the index: report computeUnitsConsumed:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-index.ts:210:5)
+      at Context.<anonymous> (tests/escrow-index.ts:1222:15)
+
+  21) escrow-window — the custody window and the status guard
+       A1. a deposit with a one-second deadline reverts (DeadlineTooSoon) and nothing is custodied:
+     AssertionError: error did not contain "DeadlineTooSoon":   Account `beneficiaryAta` not provided.: expected '  Account `beneficiaryAta` not provid…' to include 'DeadlineTooSoon'
+      at expectRevert (tests/escrow-window.ts:331:69)
+      at Context.<anonymous> (tests/escrow-window.ts:381:5)
+
+  22) escrow-window — the custody window and the status guard
+       A1b. a deposit one second BELOW the floor reverts, and exactly AT the floor is accepted:
+     AssertionError: error did not contain "DeadlineTooSoon":   Account `beneficiaryAta` not provided.: expected '  Account `beneficiaryAta` not provid…' to include 'DeadlineTooSoon'
+      at expectRevert (tests/escrow-window.ts:331:69)
+      at Context.<anonymous> (tests/escrow-window.ts:389:5)
+
+  23) escrow-window — the custody window and the status guard
+       A2. a deposit with deadline = i64::MAX reverts (DeadlineTooFar) — the funds-with-no-exit case:
+     AssertionError: error did not contain "DeadlineTooFar":   Account `beneficiaryAta` not provided.: expected '  Account `beneficiaryAta` not provid…' to include 'DeadlineTooFar'
+      at expectRevert (tests/escrow-window.ts:331:69)
+      at Context.<anonymous> (tests/escrow-window.ts:406:5)
+
+  24) escrow-window — the custody window and the status guard
+       A2b. a deposit one second ABOVE the ceiling reverts, and exactly AT the ceiling is accepted:
+     AssertionError: error did not contain "DeadlineTooFar":   Account `beneficiaryAta` not provided.: expected '  Account `beneficiaryAta` not provid…' to include 'DeadlineTooFar'
+      at expectRevert (tests/escrow-window.ts:331:69)
+      at Context.<anonymous> (tests/escrow-window.ts:411:5)
+
+  25) escrow-window — the custody window and the status guard
+       A2c. the ceiling is measured against the CLOCK, not against the deposit slot:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-window.ts:185:5)
+      at Context.<anonymous> (tests/escrow-window.ts:431:5)
+
+  26) escrow-window — the custody window and the status guard
+       B1. at t = deadline - 1 only release is legal: the refund reverts (DeadlineNotReached):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-window.ts:185:5)
+      at Context.<anonymous> (tests/escrow-window.ts:454:15)
+
+  27) escrow-window — the custody window and the status guard
+       B2. at t = deadline EXACTLY only refund is legal: the release reverts (ReleaseWindowClosed):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-window.ts:185:5)
+      at Context.<anonymous> (tests/escrow-window.ts:470:15)
+
+  28) escrow-window — the custody window and the status guard
+       B3. across the whole edge, EXACTLY ONE of release and refund succeeds at every instant:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-window.ts:185:5)
+      at Context.<anonymous> (tests/escrow-window.ts:500:14)
+
+  29) escrow-window — the custody window and the status guard
+       B4. a release six days after the deadline reverts (ReleaseWindowClosed) and the sender can still refund:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-window.ts:185:5)
+      at Context.<anonymous> (tests/escrow-window.ts:544:36)
+
+  30) escrow-window — the custody window and the status guard
+       C1. a second release, with the vault REFILLED, reverts (EscrowNotDeposited): the beneficiary is not paid twice:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-window.ts:185:5)
+      at Context.<anonymous> (tests/escrow-window.ts:578:36)
+
+  31) escrow-window — the custody window and the status guard
+       C2. a refund on a RELEASED escrow, with the vault refilled and the deadline passed, reverts (EscrowNotDeposited):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-window.ts:185:5)
+      at Context.<anonymous> (tests/escrow-window.ts:602:36)
+
+  32) escrow-window — the custody window and the status guard
+       C3. a second refund, with the vault refilled, reverts (EscrowNotDeposited): the sender cannot be paid twice either:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-window.ts:185:5)
+      at Context.<anonymous> (tests/escrow-window.ts:617:36)
+
+  33) escrow-window — the custody window and the status guard
+       D1. dust donated to the vault after the release no longer bricks the close: it is swept to the sender:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-window.ts:185:5)
+      at Context.<anonymous> (tests/escrow-window.ts:653:36)
+
+  34) escrow-window — the custody window and the status guard
+       D1b. the same holds after a refund: dust does not turn the close into a dead end:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-window.ts:185:5)
+      at Context.<anonymous> (tests/escrow-window.ts:685:36)
+
+  35) escrow-window — the custody window and the status guard
+       D2. a LIVE escrow cannot be closed, and with the sweep in place that whitelist is the only thing stopping an early exit:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow-window.ts:185:5)
+      at Context.<anonymous> (tests/escrow-window.ts:717:36)
+
+  36) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       1a. CANARY: a deposit produces an escrow_state of EXACTLY 154 bytes (AC-6/CD-7):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow.ts:250:5)
+      at Context.<anonymous> (tests/escrow.ts:397:29)
+
+  37) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       1. deposit then release pays exactly the recorded beneficiary; vault drained; status Released:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow.ts:250:5)
+      at Context.<anonymous> (tests/escrow.ts:409:36)
+
+  38) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       2. release signed by a non-authority reverts (ConstraintHasOne); vault untouched:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow.ts:250:5)
+      at Context.<anonymous> (tests/escrow.ts:441:36)
+
+  39) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       3. refund before the deadline reverts (DeadlineNotReached); vault untouched:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow.ts:250:5)
+      at Context.<anonymous> (tests/escrow.ts:470:36)
+
+  40) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       4. refund after the deadline succeeds for the sender alone (authority never signs); status Refunded:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow.ts:250:5)
+      at Context.<anonymous> (tests/escrow.ts:497:36)
+
+  41) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       5. a second terminal transition reverts (EscrowNotDeposited) after release and after refund:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow.ts:250:5)
+      at Context.<anonymous> (tests/escrow.ts:528:15)
+
+  42) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       6. a second deposit on the same [sender, remittance_id] seeds reverts (account already in use):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow.ts:250:5)
+      at Context.<anonymous> (tests/escrow.ts:598:5)
+
+  43) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       7. close while Deposited reverts (EscrowNotTerminal) — AC-8:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow.ts:250:5)
+      at Context.<anonymous> (tests/escrow.ts:614:36)
+
+  44) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       8. close after release returns rent + vault to sender, and the same seeds are reusable via a fresh deposit (anti-revival):
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow.ts:250:5)
+      at Context.<anonymous> (tests/escrow.ts:639:19)
+
+  45) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       9. deposit with amount == 0 reverts (ZeroAmount):
+     AssertionError: error did not contain "ZeroAmount":   Account `beneficiaryAta` not provided.: expected '  Account `beneficiaryAta` not provid…' to include 'ZeroAmount'
+      at expectRevert (tests/escrow.ts:293:69)
+      at Context.<anonymous> (tests/escrow.ts:689:5)
+
+  46) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       10. deposit reverts when the beneficiary has NO token account for the mint; nothing is created and nothing moves (AC-1):
+     AssertionError: error did not contain "AccountNotInitialized":   Account `beneficiaryAta` not provided.: expected '  Account `beneficiaryAta` not provid…' to include 'AccountNotInitialized'
+      at expectRevertOnAccount (tests/escrow.ts:338:69)
+      at Context.<anonymous> (tests/escrow.ts:729:5)
+
+  47) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       11. deposit reverts when the account passed is the beneficiary's ATA for a DIFFERENT mint (ConstraintAssociated):
+
+      AssertionError: expected 'ConstraintTokenMint' to equal 'ConstraintAssociated'
+      + expected - actual
+
+      -ConstraintTokenMint
+      +ConstraintAssociated
+      
+      at expectRevertOnAccount (tests/escrow.ts:332:43)
+      at Context.<anonymous> (tests/escrow.ts:752:5)
+
+  48) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       12. deposit reverts when the account passed holds the right mint but belongs to SOMEBODY ELSE (ConstraintTokenOwner):
+     AssertionError: expected the error to be attributed to account "beneficiary_ata": expected undefined to equal 'beneficiary_ata'
+      at expectRevertOnAccount (tests/escrow.ts:336:14)
+      at Context.<anonymous> (tests/escrow.ts:773:5)
+
+  49) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       13. regression of the incident, end to end: the rejected deposit becomes payable after ONE transaction:
+     AssertionError: error did not contain "AccountNotInitialized":   Account `beneficiaryAta` not provided.: expected '  Account `beneficiaryAta` not provid…' to include 'AccountNotInitialized'
+      at expectRevertOnAccount (tests/escrow.ts:338:69)
+      at Context.<anonymous> (tests/escrow.ts:794:5)
+
+  50) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       14. a deposit carrying one EXTRA account past the end of the declared list still succeeds:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow.ts:250:5)
+      at Context.<anonymous> (tests/escrow.ts:851:36)
+
+  51) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       15. the beneficiary can CLOSE its ATA after a valid deposit, and then release reverts — the LIMIT of this guard:
+     Error: Account `beneficiaryAta` not provided.
+      at /home/ferdev/.openclaw/workspace/wt-wkh343/node_modules/@coral-xyz/anchor/src/program/common.ts:51:15
+      at Array.forEach (<anonymous>)
+      at validateAccounts (node_modules/@coral-xyz/anchor/src/program/common.ts:46:14)
+      at ix (node_modules/@coral-xyz/anchor/src/program/namespace/instruction.ts:44:23)
+      at txFn (node_modules/@coral-xyz/anchor/src/program/namespace/transaction.ts:24:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:21:18)
+      at MethodsBuilder.rpc (node_modules/@coral-xyz/anchor/src/program/namespace/methods.ts:289:17)
+      at deposit (tests/escrow.ts:250:5)
+      at Context.<anonymous> (tests/escrow.ts:866:36)
+
+
+
+
+(node:2542001) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/ferdev/.openclaw/workspace/wt-wkh343/tests/escrow-index.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/ferdev/.openclaw/workspace/wt-wkh343/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)

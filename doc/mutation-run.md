@@ -137,6 +137,82 @@ Three of the mutants above are killed only by tests written for that gap:
 
 That is the whole reason C1 to C4 refill the vault before retrying.
 
+## The five of WKH-343 (2026-08-10)
+
+Run on `feat/004-wkh-343-deposito-destinatario-sin-cuenta-token`, **baseline 61 passing, 0 failing**
+(the 55 above plus the 6 tests of this HU), on the tree of commit `000c96c`. Same protocol, plus one
+control this run added:
+
+**Before running the suite on a mutant, the `sha256sum` of `lib.rs` was required to DIFFER from the
+original.** A mutant that was never applied and a mutant that survived produce the identical green
+output, and the conclusion drawn from each is the opposite one. The reference digest was
+`52dd64c8ea6047f4f2925812d4de479c1ed8aa53ee7a4f98696e4f95f0f9b2be`, and each mutant's digest is
+recorded in its capture. Restoration was proven with `git checkout` plus an **empty** `git diff HEAD`
+and the three md5 compared against the reference, never against a copy kept outside the repository.
+
+Reference md5 for this run: `b024cd91d03d6cec8fcbb5bf34884c23` /
+`26b2685ce861b04e22322b6d52430836` / `4904ecc950795662d8c4e7cca262247c`, identical after all of them.
+
+⚠️ **Two of those three moved AFTER this run, in the review fix pack, and that is expected.** The fix
+pack added `//` comments to `lib.rs` (the measured consequence of adding `mut` to `beneficiary_ata`, and
+the second route to a stuck escrow), so:
+
+| File | During this run | Fix pack round 1 | Fix pack round 2 | Why |
+|---|---|---|---|---|
+| `programs/escrow/src/lib.rs` | `4904ecc950795662d8c4e7cca262247c` | `8ea46d368a0a6d6c89fa59c90a611546` | `15c8d5ecea1babd3f029b8bcce0798ed` | round 1 added `//` comments; round 2 also rewrote a `///` |
+| `target/deploy/escrow.so` | `b024cd91d03d6cec8fcbb5bf34884c23` | `1ee62827125e75587f5595305664834c` | `1588018c0cc754db49462f93054455c9` | the binary embeds the constraint LINE NUMBERS, and the comments moved them. Same as the WKH-326 second pass. 276 800 bytes throughout, so the capacity preflight is unaffected |
+| `target/idl/escrow.json` | `26b2685ce861b04e22322b6d52430836` | `26b2685ce861b04e22322b6d52430836` | `25b498214df3f6f87a936b3e536b290b` | round 1 did **not** move it (byte for byte identical, `diff`-verified): `//` does not reach the IDL. Round 2 corrected a `///` on `Deposit.mint`, which Anchor copies into the IDL, so the canonical sha256 moved to `d295b7c7…` — recorded in `idl-hash.md`, and why it was worth a rebuild is written there |
+
+**None of the above is a re-run.** The five mutants were measured on the tree of `000c96c` with the md5
+of the first column, and they were not re-measured. What justifies that, and it is checkable rather than
+asserted: neither round changed an **executable line** of `lib.rs`. Round 1 was classified over the diff
+(19 added lines, all `//`, 0 removed, 0 non-comment) and round 2 only rewrote comment text — the `///`
+of `Deposit.mint`, which is documentation that Anchor happens to copy into the IDL, not code. The
+mutants and their killers are the same code. If a future change touches anything but comments, this
+table needs a new pass, like WKH-326 needed one.
+
+| # | Mutant | Result | Tests that died |
+|---|--------|--------|-----------------|
+| M20 | `Deposit`: the `beneficiary_ata` field deleted | KILLED | `escrow.ts` 10, 11, 12, 13; `escrow-index.ts` 20 |
+| M21 | `associated_token::authority = beneficiary` → `= sender` | KILLED | `escrow.ts` 10, 11, 13 — **not 12**, see below |
+| M22 | `Account<'info, TokenAccount>` → `UncheckedAccount<'info>` | **DOES NOT COMPILE** | none: rustc rejects it, so no binary exists to test |
+| M23 | `associated_token::mint/authority` → `token::mint/authority` | KILLED | 51 of 61, including `escrow.ts` 11 and 13 — the reason is not the one predicted, see below |
+| M24 | (form B) the `require_keys_eq!` in the handler deleted | **NOT APPLICABLE** | form B was not implemented: there is no `require_keys_eq!` to delete |
+
+Raw captures, one per mutant, in
+`doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/w5/M*-summary.txt`.
+
+Three of these five did **not** behave as the story file predicted, and the differences are the
+useful part of the run.
+
+- **M21 is not killed by test 12, and test 12 cannot kill it.** The prediction was "12, 13". Measured:
+  10, 11, 13. Read off the generator (`anchor-syn` 1.1.2 `codegen/accounts/constraints.rs:1313-1322`),
+  the constraint checks the token account's **owner** first and its **address** second. Test 12 passes
+  the *attacker's* ATA, whose owner is neither the beneficiary nor the sender, so it fails with
+  `ConstraintTokenOwner` under the healthy guard **and** under the mutant — same code, same account.
+  Distinguishing "looks at the beneficiary" from "looks at the sender" needs a case where the account
+  belongs to the **sender**, and that is what tests 10 and 13 supply. The guard is still covered by
+  three tests; the attribution was wrong, not the coverage.
+
+- **M22 is stopped by the compiler, which is stronger than being killed by a test.** A mutant that dies
+  by test needs somebody to run the tests; a mutant that does not compile cannot reach a binary at all.
+  It also means the **one-line** mutant that would restore the full ambiguity of error 3012 does not
+  exist: reaching an `UncheckedAccount` requires *also* deleting the two `associated_token::`
+  constraints, because they are what fails to compile against that type (`can't compare &__Pubkey with
+  __Pubkey`, since `UncheckedAccount::owner` is the AccountInfo owner and not the token account's owner
+  field). That two-part edit begins with what is essentially M20, which five tests kill.
+
+- **M23 kills 51 tests, and the mechanism is not the predicted one.** The prediction was tests 11 and 13
+  (the non-canonical ATA cases). They do die, but so does most of the suite, including tests that have
+  nothing to do with the beneficiary. Measured by rebuilding under the mutant and reading the IDL: with
+  `token::` the `beneficiary_ata` entry has a single key, `name`, and **no `pda` block**. The `pda`
+  block is what lets the client derive the account without anyone naming it, so without it every
+  `deposit` that does not pass the account explicitly fails **client side**, before reaching the chain.
+  This is the same fact as the W2.3 result measured from the opposite direction: `associated_token::`
+  yields a `pda` block and the client derives the account on its own (which is why none of the four
+  `deposit` builders in the test suites needed changing), while `token::` removes it. The automatic
+  derivation is a consequence of the constraint CD-6 demands for a security reason, not a convenience.
+
 ## How to repeat it
 
 There is no committed harness: the driver was a throwaway script, because a mutation harness that
@@ -154,8 +230,10 @@ anchor test --skip-build --skip-deploy --skip-local-validator   # must match the
 
 **The restoration criterion is the baseline of the tree you are standing on, not a literal.** Each
 section above states its own: **43** for the M1..M14 run on `feat/ventana-de-custodia`, **54** for
-the first WKH-326 pass, **55** for the second. Read it off the section you are repeating, and if the
-tree has moved since, take the baseline from a clean run *before* you break anything. A hardcoded
+the first WKH-326 pass, **55** for the second, **61** for the WKH-343 run. Read it off the section you
+are repeating, and if the tree has moved since, take the baseline from a clean run *before* you break
+anything. And check the mutant is actually applied: compare the `sha256sum` of `lib.rs` against the
+unmutated file, because a mutant that never got written and a mutant that survived look the same. A hardcoded
 number here ages the moment a HU adds a test, and then it produces exactly the failure this file
 warns about twice: you restore correctly, count more tests than the literal says, and conclude you
 restored wrong.

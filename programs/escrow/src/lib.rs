@@ -18,6 +18,12 @@
 //! | `release` | `authority` (the operator) | `now <  deadline` | the `beneficiary` fixed at deposit |
 //! | `refund`  | `sender` | `now >= deadline` | back to the `sender` |
 //!
+//! `deposit` requires the beneficiary's associated token account for the escrow's mint to already
+//! exist, and it never creates it. That is the same account `release` will require, so a deposit
+//! that could not be settled for that reason is rejected before any token moves. It bounds the
+//! case "the account never existed"; it does not cover a beneficiary that closes the account after
+//! the deposit, which stays possible and leaves the refund path as the only exit.
+//!
 //! Both also require `status == Deposited` and both write a terminal status
 //! *before* the transfer, so neither can run twice. Because the two windows are
 //! disjoint, at most one of them is legal at any instant: the operator cannot
@@ -26,6 +32,8 @@
 //!
 //! No instruction can send tokens to an address that was not written into
 //! `EscrowState` at deposit time, and no key can move the vault anywhere else.
+//! The beneficiary written at deposit time is additionally required, at that same moment, to hold
+//! an associated token account for the mint being escrowed.
 //!
 //! `deadline` is clamped at deposit to `[now + MIN_CUSTODY_SECS, now +
 //! MAX_CUSTODY_SECS]` (1 h to 24 h), so the sender's worst case wait before the
@@ -510,31 +518,55 @@ pub enum ErrorCode {
 // ---------------------------------------------------------------------------
 
 #[derive(Accounts)]
-#[instruction(remittance_id: [u8; 16])]
+// `beneficiary` se agrega acá (WKH-343) para que las constraints de `beneficiary_ata`, al final de
+// esta struct, puedan derivar la ATA canónica del destinatario. Es el MISMO arg que el handler graba
+// en `escrow.beneficiary`, así que la cuenta validada y el beneficiario grabado no pueden diferir.
+// Los 5 args de la instrucción NO cambian (CD-12): esto sólo los pone en scope en `try_accounts`,
+// igual que ya se hacía con `remittance_id` para las seeds del PDA.
+#[instruction(remittance_id: [u8; 16], beneficiary: Pubkey)]
 pub struct Deposit<'info> {
     #[account(mut)]
     pub sender: Signer<'info>,
 
-    // ⚠️ CORRECCION 2026-08-04, y va en `//` a proposito (los `///` viajan al IDL):
-    // el doc comment de abajo justifica NO clavar el mint acá citando un control
-    // compensatorio que HOY NO EXISTE. Dice que el co-firmante off-chain "se niega a
-    // firmar un depósito con un mint inesperado". Ese co-firmante es CR-1 del
-    // facilitator, y se verificó que NUNCA compara el mint contra nada: el índice del
-    // MINT en las cuentas del deposit no se contrasta con `SOLANA_USDC_MINT`, que sí se
-    // usa en las otras dos rutas del mismo servicio.
-    // O sea: un comentario justifica la ausencia de un guard citando otro guard que no
-    // está. Mientras eso siga así, el programa acepta cualquier mint y NADIE lo filtra.
-    // NO se corrige el `///` porque Anchor lo copia al IDL y eso mueve el sha256
-    // canónico publicado en cadena y pinneado por los dos consumidores (medido: el test
-    // AC-3 del facilitator se pone rojo). Se corrige cuando se republique el IDL.
+    // ⚠️ CORRECCION 2026-08-04, ACTUALIZADA POR WKH-343 (2026-08-10) Y CORREGIDA EN SU FIX PACK.
+    // Lo que decía esta nota: que el `///` de abajo justificaba no clavar el mint citando un
+    // co-firmante off-chain que "se niega a firmar un depósito con un mint inesperado", y que ese
+    // control NO EXISTIA.
+    // QUE CAMBIO, y es lo que corrige el fix pack: el control SI EXISTE desde el 2026-08-04.
+    // `wasiai-facilitator/src/methods/solana-sponsor/cr1.ts:281-282` compara el mint del deposito
+    // contra `SOLANA_USDC_MINT` y responde `MINT_MISMATCH`; entro en el commit e14383f (ancestro de
+    // `origin/main`, verificado). Esta nota afirmaba lo contrario y el `///` de abajo tambien: las
+    // dos frases eran FALSAS. Lo que sigue siendo cierto es el ALCANCE, y va escrito abajo: cubre
+    // los depositos que pasan por el patrocinador, y un deposito armado y firmado por fuera no lo
+    // atraviesa.
+    // NO MEDIDO: si el servicio desplegado en produccion corre ese commit. Se leyo el repo, no el
+    // deploy.
+    // POR QUE SE CORRIGIO EL `///` Y NO SE PARQUEO EN UN `//`, que es la practica de este archivo:
+    // porque WKH-343 mueve el sha256 canonico del IDL POR CONSTRUCCION (agrega `beneficiary_ata`),
+    // asi que la ventana esta abierta y corregir cuesta un rebuild. El IDL nuevo NO se publico
+    // todavia: las dos mitades del gate de W6 siguen sin cumplirse (runbook-deploy.md:21-24). Si se
+    // publicara con la frase falsa adentro, quedaria inmortalizada en cadena y corregirla pasaria a
+    // costar un upgrade de IDL. El costo es asimetrico y por eso se corrige ahora.
     /// Acepta CUALQUIER mint, y es una decisión, no un olvido. El programa es infraestructura de
-    /// escrow genérica; "qué token vale un dólar" es política de producto y vive en el componente
-    /// que está en el camino crítico de todos los depósitos (el co-firmante off-chain, que se
-    /// niega a firmar un depósito con un mint inesperado). Clavarlo acá obligaría a dos builds,
-    /// dos IDL, dos hashes pinneados y un redespliegue para rotarlo.
+    /// escrow genérica; "qué token vale un dólar" es política de producto y vive aguas arriba, en
+    /// el componente que arma el depósito. Clavarlo acá obligaría a dos builds, dos IDL, dos hashes
+    /// pinneados y un redespliegue para rotarlo.
+    ///
+    /// ⚠️ DÓNDE VIVE EL CONTROL, y hasta dónde llega: el co-firmante off-chain compara el mint del
+    /// depósito contra el que tiene configurado y se niega a firmar si no coincide. Ese control
+    /// EXISTE. Lo que no hace es cubrir todos los depósitos: cubre sólo los que pasan por él, y un
+    /// depósito construido y firmado por fuera del patrocinador no lo atraviesa. Para esos, el
+    /// programa acepta cualquier mint y nadie aguas arriba lo filtra.
+    ///
+    /// LO QUE ESTA STRUCT SÍ EXIGE, y es distinto de clavar el mint: que el mint sea CONSISTENTE
+    /// con un beneficiario capaz de recibirlo (ver `beneficiary_ata`, al final de esta struct). Es
+    /// un invariante RELACIONAL entre el mint y el destinatario, y por eso una constante global no
+    /// lo expresa: clavar el mint no habría prevenido el incidente de WKH-343 (los 4 depósitos
+    /// trabados estaban sobre el mint que el producto quiere usar) y además rechazaría ese mismo
+    /// token. Lo que se violó no fue `mint == X`.
     ///
     /// LA CONDICIÓN QUE DA VUELTA ESTA DECISIÓN, escrita para que se pueda comprobar: el día que
-    /// exista un barrido que descubra depósitos on-chain y los tome por buenos SIN esa co-firma,
+    /// exista un barrido que descubra depósitos on-chain y los tome por buenos SIN co-firma,
     /// el mint tiene que clavarse acá, porque ahí un depósito auto-fondeado con el mint de un
     /// atacante entraría a un camino de producto. Los enumeradores de hoy (EscrowIndex y el
     /// resolver de ids) sólo alimentan el refund, que es inofensivo.
@@ -578,6 +610,63 @@ pub struct Deposit<'info> {
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
+
+    // WKH-343. AL FINAL DE LA LISTA A PROPOSITO, despues de system_program, rompiendo la convencion
+    // de "los programas van ultimos". El motivo es el ORDEN DE DESPLIEGUE: Anchor solo falla por
+    // cuentas de MENOS (anchor-syn 1.1.2 codegen/accounts/try_accounts.rs:48,64) y las de sobra van a
+    // remaining_accounts (anchor-lang 1.1.2 src/context.rs:68), asi que una cuenta agregada AL FINAL
+    // la ignora el binario viejo y un cliente actualizado puede desplegarse ANTES que el programa,
+    // sin ventana en la que los depositos fallen. Insertarla en el medio rompe eso: el binario viejo
+    // leeria esta cuenta como su `token_program`. El test 14 de tests/escrow.ts ejerce el mecanismo.
+    // OJO: eso vale para el orden CLIENTE-PRIMERO. El orden inverso (programa nuevo, cliente viejo)
+    // SI tiene ventana de falla, y su sintoma es engañoso: el programa nuevo lee como
+    // `beneficiary_ata` la ultima cuenta que mande el cliente viejo y falla nombrando ESTA cuenta,
+    // cuando la causa real es que el cliente no se actualizo.
+    //
+    // Que valida, y que NO: valida que en el instante del DEPOSITO exista la ATA canonica del
+    // beneficiario para este mint, que es exactamente la cuenta que `release` va a exigir (ver
+    // Release.beneficiary_ata en este mismo archivo, con las MISMAS dos constraints). Por eso un
+    // deposito que entra no puede quedar sin camino de entrega POR ESTA CAUSA.
+    // NO garantiza que siga existiendo en el instante del release: el beneficiario puede cerrarla
+    // despues (SPL CloseAccount, la firma su dueño, nadie se lo puede impedir). O sea que ACOTA el
+    // caso "nunca existio" y deja ABIERTO "existia y se cerro". El test 15 de tests/escrow.ts ejerce
+    // ese caso a proposito, para que el limite quede ejecutable y no sea una nota de prosa.
+    // Y NO es el unico camino que queda abierto al mismo estado trabado, aunque este es PREEXISTENTE:
+    // `beneficiary` entra a `deposit` como arg `Pubkey` sin constraint de tipo (linea 146) y `release`
+    // lo declara `SystemAccount` (Release.beneficiary, mas abajo). Medido en bankrun: con un
+    // `beneficiary` propiedad del SPL Token program y su ATA canonica creada, el DEPOSITO ENTRA y el
+    // release falla SIEMPRE con AccountNotSystemOwned (3011), y solo queda el refund del sender.
+    // No lo introduce ni lo cierra esta HU, y necesita un cliente modificado (chaski-v3 manda la
+    // pubkey de una billetera). Detalle y la corrida:
+    // doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/fix-pack-mnr-2.txt
+    //
+    // `associated_token::` y no `token::`, y no es intercambiable: `token::` aceptaria cualquier
+    // token account del beneficiario con este mint, incluida una que NO es la ATA canonica, y
+    // `release` exige la canonica. El guard tiene que exigir exactamente lo mismo que el que va a
+    // cobrar, o no predice nada.
+    // SIN `mut`: en `deposit` no se le transfiere nada a esta cuenta, solo se comprueba que exista.
+    // Menos privilegio, y obliga a que alguien agregue el `mut` a mano el dia que quiera mandarle
+    // tokens desde aca.
+    // ⛔ Y ANTES DE AGREGARLO, LEER ESTO, porque ese `mut` ROMPE PRODUCCION y esta medido: con `mut`,
+    // esta cuenta viaja writable en el indice 8, que es el primero del `keys.slice(8)` con el que
+    // CR-1 del facilitator exige que todo remaining account sea no-signer y no-writable
+    // (wasiai-facilitator/src/methods/solana-sponsor/cr1.ts:285-288). CR-1 rechazaria el 100% de los
+    // depositos patrocinados con REMAINING_ACCOUNT_FLAGS_INVALID, un enum cuyo nombre apunta al
+    // `reference` y no a esta cuenta, asi que el que lo debuguee va a mirar el lugar equivocado.
+    // Sin `mut`, hoy pasa por dos razones y las dos son fragiles: ese slice y que cr1.ts:220 compare
+    // con `<` en vez de `!==` (con `!==` una cuenta de mas ya seria DEPOSIT_ACCOUNTS_MISSING).
+    // OJO, el mismo rechazo es alcanzable HOY sin tocar nada: si `beneficiary == sender`, entonces
+    // `beneficiary_ata == sender_ata`, que va writable en el indice 4, y los flags se unen por
+    // TRANSACCION, asi que el indice 8 sale writable igual.
+    // SIN `init` ni `init_if_needed`, y es una decision, no un olvido: crear la ATA aca completaria
+    // un pago del activo equivocado de forma irreversible, y ademas le habria sacado la salida a los
+    // 4 depositos trabados del incidente (habrian quedado `Released`, que es terminal, y los 4
+    // refunds del 2026-08-10 habrian revertido con EscrowNotDeposited).
+    #[account(
+        associated_token::mint = mint,
+        associated_token::authority = beneficiary
+    )]
+    pub beneficiary_ata: Account<'info, TokenAccount>,
 }
 
 #[derive(Accounts)]

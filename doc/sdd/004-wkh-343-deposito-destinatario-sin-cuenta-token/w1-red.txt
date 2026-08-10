@@ -1,0 +1,166 @@
+# wave:       W1
+# pasada:     1
+# fecha:      2026-08-10T08:45Z
+# commit:     8fca47294f6cd8e7ecefd330e278e63078957e26
+# lib.rs md5: e21a3f5e7d06ed83869d6a780c6bbe20   <- el ORIGINAL, sin tocar (e21a3f5e7d06ed83869d6a780c6bbe20)
+# baseline:   57 passing, 4 failing
+# discriminador: passing + failing = 61   <- se deriva del propio contenido, sin creerle a esta cabecera
+#
+# ===========================================================================
+# W1 -- LA CORRIDA EN ROJO. Es el archivo que prueba que los tests miran algo.
+# ===========================================================================
+#
+# El programa esta SIN CAMBIAR: lib.rs md5 = e21a3f5e7d06ed83869d6a780c6bbe20, el mismo del W0.1,
+# y "git diff HEAD -- programs/escrow/src/lib.rs" vacio. Lo unico modificado es tests/escrow.ts.
+#
+# Resultado esperado por el Story File §14: T10..T13 FALLAN, T14/T15 PASAN. Es lo que paso:
+#
+#   T10  deposit sin ATA del beneficiario para el mint          FALLA   <- el caso medido (§1.1)
+#   T11  ATA del beneficiario pero de OTRO mint                 FALLA
+#   T12  token account del mint correcto, de OTRO dueño         FALLA
+#   T13  regresion extremo a extremo del incidente              FALLA (en su primera mitad)
+#   T14  happy path con una cuenta EXTRA al final               PASA
+#   T15  el beneficiario CIERRA su ATA -> release revierte      PASA
+#
+# discriminador contra W0.1:  55 passing + 0 failing = 55   (antes de W1)
+#                             57 passing + 4 failing = 61   (esta corrida)
+# Los 6 tests nuevos ya estan los 6 presentes y ninguno saltado; 2 pasan y 4 fallan.
+#
+# ---------------------------------------------------------------------------
+# LO IMPORTANTE, y es lo que distingue "el test mide algo" de "el test esta roto"
+# ---------------------------------------------------------------------------
+#
+# Los 4 fallos son TODOS el mismo assert, el ULTIMO de expectRevertOnAccount:
+#
+#     expected tx to revert with <CODIGO> on account beneficiary_ata
+#     + expected - actual
+#     -false
+#     +true
+#
+# Ese "-false / +true" es sobre la variable `threw`. O sea: la transaccion NO tiro NADA.
+# EL DEPOSITO ENTRO.
+#
+# Eso es exactamente la evidencia que hacia falta: contra el programa viejo el deposito de un
+# beneficiario que no puede recibir el token SE ACEPTA. Y descarta el modo de fallo que habria
+# invalidado la medicion: si el fixture estuviera mal (mint mal creado, sender sin saldo, ATA mal
+# derivada) el test fallaria con OTRO error -- un codigo distinto al esperado, o una excepcion
+# dentro del fixture antes de llegar al assert. No es el caso en ninguno de los 4.
+#
+# T13 ademas falla en su PRIMERA MITAD (linea del expectRevertOnAccount, no en el release), que es
+# lo que pedia §7.3: la mitad 2 no se alcanza porque la mitad 1 es la que tiene que fallar ahora.
+#
+# ---------------------------------------------------------------------------
+# Salida filtrada: se quitaron los renglones DEBUG/INFO/WARN del runtime de Agave. Los nombres de
+# test, los 4 fallos con su stack y el resumen van completos.
+# ===========================================================================
+
+Found a 'test' script in the Anchor.toml. Running it as a test suite!
+Running test suite: "/home/ferdev/.openclaw/workspace/wt-wkh343/Anchor.toml"
+(node:2473237) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/ferdev/.openclaw/workspace/wt-wkh343/tests/escrow-index.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/ferdev/.openclaw/workspace/wt-wkh343/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  escrow-index — enumerable per-sender escrow index (HU-SOL-20)
+    ✔ 1b. a hand-built 154-byte legacy escrow_state is still refundable by the new program (AC-6)
+    ✔ 2. deposit + register_escrow creates the index PDA with the right header and entries (AC-3)
+    ✔ 3. the sender recovers a forgotten escrow from the index alone and refunds it (AC-4)
+    ✔ 4a. IDL: exactly 6 instructions, and neither new instruction takes an `authority` account (AC-5/CD-1)
+    ✔ 4b. an attacker cannot register the victim's escrow into any index (AC-5)
+    ✔ 4c. an attacker cannot deregister entries from the victim's index (AC-5)
+    ✔ 5. registering MAX_ENTRIES escrows works and the next one reverts with EscrowIndexFull (270ms)
+    ✔ 6. registering the same id twice does not duplicate and does not revert (idempotent)
+    ✔ 7. deregister_escrow removes only the target entry, moves no tokens, and is a no-op if absent
+    ✔ 8a. register_escrow on a never-deposited escrow reverts (AccountNotInitialized)
+    ✔ 8b. register_escrow on an already Released escrow reverts (EscrowNotDeposited)
+[T10] rent(558 bytes EscrowIndex) = 4774560 lamports (0.00477456 SOL)
+[T10] rent(154 bytes EscrowState)  = 1962720 lamports (0.00196272 SOL)
+    ✔ 10. rent-exemption cost of the index is measured against the SDD estimate
+[T11] computeUnitsConsumed(deposit + register_escrow, 1 tx) = 52844
+    ✔ 11. deposit + register_escrow in ONE atomic tx: report computeUnitsConsumed
+    ✔ 12. close removes exactly the entry of the escrow it closes and leaves the rest in order (AC-1)
+    ✔ 13. close with escrowIndex=null confirms and does NOT create the index account (AC-2)
+    ✔ 13b. leaving the escrowIndex key out does NOT omit the account: the client sends the PDA (CD-14)
+    ✔ 13c. close with escrowIndex=null when the index HOLDS the id confirms and leaves the entry dangling
+    ✔ 14. 33 deposit→register→release→close cycles with the SAME sender all succeed (AC-3) (514ms)
+    ✔ 15. close with the VICTIM's index reverts ConstraintSeeds and leaves that index untouched (AC-4)
+    ✔ 16. close with the index moves exactly the same tokens as before the change (AC-5)
+    ✔ 17. close on a Deposited escrow reverts EscrowNotTerminal and removes no entry (AC-6)
+    ✔ 18. close with an index that does not contain the id confirms and leaves entries alone (AC-7)
+    ✔ 19. the built IDL declares 6 instructions, the 6 usual discriminators, and escrow_index last in close (AC-8)
+    ✔ 20. the other five instructions keep their accounts, args and discriminator (AC-9)
+[T21] computeUnitsConsumed(close, with index)    = 22643
+[T21] computeUnitsConsumed(close, escrowIndex=null) = 15690
+[T21] difference (same run, DIFFERENT escrows — NOISE, samples -2047..+18953, all ≡ 953 mod 1_500, can be negative, NOT the cost of the index) = 6953
+    ✔ 21. close with and without the index: report computeUnitsConsumed
+  escrow-window — the custody window and the status guard
+    ✔ A1. a deposit with a one-second deadline reverts (DeadlineTooSoon) and nothing is custodied
+    ✔ A1b. a deposit one second BELOW the floor reverts, and exactly AT the floor is accepted
+    ✔ A2. a deposit with deadline = i64::MAX reverts (DeadlineTooFar) — the funds-with-no-exit case
+    ✔ A2b. a deposit one second ABOVE the ceiling reverts, and exactly AT the ceiling is accepted
+    ✔ A2c. the ceiling is measured against the CLOCK, not against the deposit slot
+    ✔ B1. at t = deadline - 1 only release is legal: the refund reverts (DeadlineNotReached)
+    ✔ B2. at t = deadline EXACTLY only refund is legal: the release reverts (ReleaseWindowClosed)
+    ✔ B3. across the whole edge, EXACTLY ONE of release and refund succeeds at every instant (96ms)
+    ✔ B4. a release six days after the deadline reverts (ReleaseWindowClosed) and the sender can still refund
+    ✔ C1. a second release, with the vault REFILLED, reverts (EscrowNotDeposited): the beneficiary is not paid twice
+    ✔ C2. a refund on a RELEASED escrow, with the vault refilled and the deadline passed, reverts (EscrowNotDeposited)
+    ✔ C3. a second refund, with the vault refilled, reverts (EscrowNotDeposited): the sender cannot be paid twice either
+    ✔ C4. a release on a REFUNDED escrow whose window is still open reverts (EscrowNotDeposited)
+    ✔ D1. dust donated to the vault after the release no longer bricks the close: it is swept to the sender
+    ✔ D1b. the same holds after a refund: dust does not turn the close into a dead end
+    ✔ D2. a LIVE escrow cannot be closed, and with the sweep in place that whitelist is the only thing stopping an early exit
+    ✔ E1. the status byte means the same thing it always meant: 0, 1 and 2 keep their names
+    ✔ E1b. a status byte of 3 does NOT decode: the enum has exactly three variants and that is a contract with the consumers
+    ✔ E2. an account already sitting on chain as Released is still closable (its byte was not re-pointed)
+    ✔ E3. an account already sitting on chain as Refunded is still closable too
+  escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+    ✔ 1a. CANARY: a deposit produces an escrow_state of EXACTLY 154 bytes (AC-6/CD-7)
+    ✔ 1. deposit then release pays exactly the recorded beneficiary; vault drained; status Released
+    ✔ 2. release signed by a non-authority reverts (ConstraintHasOne); vault untouched
+    ✔ 3. refund before the deadline reverts (DeadlineNotReached); vault untouched
+    ✔ 4. refund after the deadline succeeds for the sender alone (authority never signs); status Refunded
+    ✔ 5. a second terminal transition reverts (EscrowNotDeposited) after release and after refund
+    ✔ 6. a second deposit on the same [sender, remittance_id] seeds reverts (account already in use)
+    ✔ 7. close while Deposited reverts (EscrowNotTerminal) — AC-8
+    ✔ 8. close after release returns rent + vault to sender, and the same seeds are reusable via a fresh deposit (anti-revival)
+    ✔ 9. deposit with amount == 0 reverts (ZeroAmount)
+    1) 10. deposit reverts when the beneficiary has NO token account for the mint; nothing is created and nothing moves (AC-1)
+    2) 11. deposit reverts when the account passed is the beneficiary's ATA for a DIFFERENT mint (ConstraintAssociated)
+    3) 12. deposit reverts when the account passed holds the right mint but belongs to SOMEBODY ELSE (ConstraintTokenOwner)
+    4) 13. regression of the incident, end to end: the rejected deposit becomes payable after ONE transaction
+    ✔ 14. a deposit carrying one EXTRA account past the end of the declared list still succeeds
+    ✔ 15. the beneficiary can CLOSE its ATA after a valid deposit, and then release reverts — the LIMIT of this guard
+  57 passing (5s)
+  4 failing
+  1) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       10. deposit reverts when the beneficiary has NO token account for the mint; nothing is created and nothing moves (AC-1):
+      expected tx to revert with AccountNotInitialized on account beneficiary_ata
+      + expected - actual
+      -false
+      +true
+      at expectRevertOnAccount (tests/escrow.ts:350:10)
+      at Context.<anonymous> (tests/escrow.ts:729:5)
+  2) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       11. deposit reverts when the account passed is the beneficiary's ATA for a DIFFERENT mint (ConstraintAssociated):
+      expected tx to revert with ConstraintAssociated on account beneficiary_ata
+      + expected - actual
+      -false
+      +true
+      at expectRevertOnAccount (tests/escrow.ts:350:10)
+      at Context.<anonymous> (tests/escrow.ts:752:5)
+  3) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       12. deposit reverts when the account passed holds the right mint but belongs to SOMEBODY ELSE (ConstraintTokenOwner):
+      expected tx to revert with ConstraintTokenOwner on account beneficiary_ata
+      + expected - actual
+      -false
+      +true
+      at expectRevertOnAccount (tests/escrow.ts:350:10)
+      at Context.<anonymous> (tests/escrow.ts:773:5)
+  4) escrow — WasiAI trustless USDC escrow (anchor-bankrun)
+       13. regression of the incident, end to end: the rejected deposit becomes payable after ONE transaction:
+      expected tx to revert with AccountNotInitialized on account beneficiary_ata
+      + expected - actual
+      -false
+      +true
+      at expectRevertOnAccount (tests/escrow.ts:350:10)
+      at Context.<anonymous> (tests/escrow.ts:794:5)
