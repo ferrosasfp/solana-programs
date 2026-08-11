@@ -47,6 +47,16 @@ RPC="${RPC:-https://api.devnet.solana.com}"
 IDL_FILE="${IDL_FILE:-target/idl/escrow.json}"
 MAX_TRIES="${MAX_TRIES:-6}"
 PRIORITY_FEES="${PRIORITY_FEES:-500000}"
+# ── LOS TIEMPOS QUE FUNCIONARON, y no son decorativos ──────────────────────────────────────
+# Con esperas de 4-5 s este script fallo 6 de 6. Con estas publico en la primera pasada del
+# create, despues de que `update-buffer` completara el buffer en 4 intentos. La escritura se
+# reparte en 6 transacciones y alguna se descarta; darle aire entre pasada y pasada es lo que
+# deja que las que faltan aterricen.
+ESPERA_TRAS_CLOSE="${ESPERA_TRAS_CLOSE:-20}"
+ESPERA_TRAS_BUFFER="${ESPERA_TRAS_BUFFER:-30}"
+ESPERA_ENTRE_RELLENOS="${ESPERA_ENTRE_RELLENOS:-40}"
+ESPERA_TRAS_CREATE="${ESPERA_TRAS_CREATE:-25}"
+PASADAS_RELLENO="${PASADAS_RELLENO:-6}"
 
 PM=(npx --yes --package=@solana-program/program-metadata@0.5.1 -- program-metadata --rpc "$RPC")
 say() { printf '%s\n' "$*"; }
@@ -161,14 +171,15 @@ hr
 # `create` no sobreescribe, y crecer la cuenta en su lugar es justo donde la herramienta rompe.
 say "Cerrando la cuenta de metadata si existe…"
 "${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true
-sleep 3
+sleep "$ESPERA_TRAS_CLOSE"
 
 for i in $(seq 1 "$MAX_TRIES"); do
   hr; say "Intento $i de $MAX_TRIES"
   out="$("${PM[@]}" --priority-fees "$PRIORITY_FEES" create-buffer "$MIN" 2>&1)"
   buf="$(printf '%s' "$out" | grep -oE 'buffer: [1-9A-HJ-NP-Za-km-z]{43,44}' | awk '{print $2}' | head -1)"
-  [ -z "$buf" ] && { say "  no se creó el buffer; reintento"; sleep 5; continue; }
+  [ -z "$buf" ] && { say "  no se creó el buffer; reintento"; sleep 10; continue; }
   say "  buffer: $buf"
+  sleep "$ESPERA_TRAS_BUFFER"
 
   # ── RELLENAR, no descartar ──────────────────────────────────────────────────────────────
   # El plan que la herramienta exporta son 6 transacciones: la #1 asigna la cuenta y las #2..#6
@@ -179,15 +190,15 @@ for i in $(seq 1 "$MAX_TRIES"); do
   # Tirar el buffer y empezar de cero repite la loteria completa. `update-buffer` reescribe el
   # contenido sobre el buffer que ya existe, asi que cada pasada tiene que acercarse.
   completo=0
-  for intento_relleno in 1 2 3 4 5; do
+  for intento_relleno in $(seq 1 "$PASADAS_RELLENO"); do
     verificar_onchain "$buf" "$HASH"; rc=$?
     if [ "$rc" -eq 0 ]; then completo=1; say "  buffer COMPLETO y con el hash esperado ✅"; break; fi
     if [ "$rc" -eq 2 ]; then
-      say "  no pudimos leer la cadena (pasada $intento_relleno) — reintento la lectura"; sleep 8; continue
+      say "  no pudimos leer la cadena (pasada $intento_relleno) — reintento la lectura"; sleep 15; continue
     fi
     say "  incompleto (pasada $intento_relleno) — rellenando con update-buffer"
     "${PM[@]}" --priority-fees "$PRIORITY_FEES" update-buffer "$buf" "$MIN" >/dev/null 2>&1 || true
-    sleep 4
+    sleep "$ESPERA_ENTRE_RELLENOS"
   done
   if [ "$completo" -ne 1 ]; then
     say "  no se pudo completar este buffer — lo cierro y arranco otro"
@@ -195,7 +206,7 @@ for i in $(seq 1 "$MAX_TRIES"); do
   fi
 
   "${PM[@]}" create idl "$PROGRAM_ID" --buffer "$buf" >/dev/null 2>&1 || true
-  sleep 3
+  sleep "$ESPERA_TRAS_CREATE"
 
   tmp="$(mktemp)"
   "${PM[@]}" fetch idl "$PROGRAM_ID" > "$tmp" 2>&1
@@ -220,7 +231,7 @@ PY
   fi
   rm -f "$tmp"
   say "  el create quedó a medias; cierro y reintento"
-  "${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true; sleep 5
+  "${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true; sleep "$ESPERA_TRAS_CLOSE"
 done
 
 hr
