@@ -1,75 +1,49 @@
 #!/usr/bin/env bash
-# Publica el IDL en la cuenta de metadata canónica del programa.
+# Publica el IDL en la cuenta de metadata canonica del programa.
 #
-# ── LAS TRES COSAS QUE ESTE SCRIPT SABE Y QUE CUESTAN UNA NOCHE AVERIGUAR ───────────────────
+# ── LA CAUSA, medida el 2026-08-11 ─────────────────────────────────────────────────────────
 #
-# 0) POR QUE FALLA: el plan son 6 transacciones — la #1 asigna la cuenta y las #2..#6 escriben
-#    el contenido en 5 trozos (medido con `--export`). En la cadena NO hay ni una transaccion
-#    fallida de la authority, y el buffer igual queda parcial: alguna escritura se DESCARTA y una
-#    transaccion descartada no deja rastro. Por eso la estrategia es RELLENAR con `update-buffer`
-#    sobre el buffer que ya existe, y no tirarlo y volver a empezar.
+# `program-metadata` arma un plan de 7 transacciones ENCADENADAS: la #1 crea la cuenta y las #2..#7
+# le escriben el contenido en pedazos. Las despacha sin esperar que la #1 sea visible, asi que el
+# nodo RPC simula las siguientes contra un estado donde la cuenta todavia no existe (eso es el
+# preflight) y las RECHAZA con InvalidAccountData. Nunca las transmite.
 #
-# 1) MINIFICAR AYUDA PERO NO ALCANZA, y conviene no confundirlo con la causa: el archivo de
-#    `anchor build` son 37530 bytes crudos / 5532 comprimidos, minificado 16020 / 4886. Con el
-#    indentado el buffer quedaba en 5776 bytes; minificado, en 4982. Los dos truncados. Se
-#    minifica igual porque menos trozos es menos loteria, no porque lo resuelva.
-#    `anchor build` escribe `target/idl/escrow.json` INDENTADO: 37530 bytes crudos, 5532
-#    comprimidos. El mismo IDL minificado son 16020 crudos y 4883 comprimidos. El IDL que SÍ se
-#    publicó con éxito (canónico d295b7c7) medía 15862 / 4894 — o sea del tamaño del minificado.
-#    Con la versión indentada la escritura se corta SIEMPRE: 6 intentos, 6 buffers truncados.
-#    Minificar NO cambia el hash canónico, porque el canónico re-serializa con las claves
-#    ordenadas; el formato del archivo es irrelevante para él.
+# LA EVIDENCIA QUE LO ATA: `getSignaturesForAddress` sobre la authority muestra 25 transacciones y
+# CERO con error. Eso no significa "todo aterrizo bien" — significa que las que fallaron nunca
+# llegaron a la cadena. Una transaccion que falla EJECUTANDOSE deja su error escrito; estas no
+# dejaron ninguno porque murieron en el preflight, del lado del cliente.
 #
-# 2) `fetch-buffer` ESTÁ ROTO en esta versión del CLI. Devuelve `[Error] undefined` incluso sobre
-#    un buffer sano. Así que NO se puede usar para verificar. Este script lee la cuenta por RPC,
-#    busca el magic de zlib (`789c`), descomprime y compara el hash canónico. Eso sí es una
-#    verificación.
+# El sintoma es siempre el mismo numero: la cuenta queda en 926 bytes, que es exactamente lo que
+# escribe la #1. Y `anchor idl init` NO es una alternativa: Anchor 1.1.2 envuelve esta misma
+# herramienta, con el mismo resultado.
 #
-# 3) EL EXIT STATUS DE LA HERRAMIENTA NO ES EVIDENCIA, en ninguna de las dos direcciones. Medido:
-#    un `close` que reportó [Error] entró igual (la cuenta desapareció de la cadena), y un
-#    `create` que reportó [Error] dejó la cuenta con 926 bytes de un stream que necesita ~4,9 KiB.
-#    `getSignaturesForAddress` sobre la authority: 15 transacciones, CERO con error. Todo se
-#    decide LEYENDO la cadena.
+# ⚠️ NO CONFUNDIR CON LO QUE ESTE ARCHIVO DECIA ANTES. Llego a documentar como causa un "descarte
+# de transacciones sin rastro" y un "limite de tasa". Las dos eran conjeturas escritas como si
+# fueran mediciones. La primera es falsa; la segunda existe (el RPC publico devuelve 429 si se lo
+# martilla) pero es un estorbo, no la causa: 15 minutos de silencio total no cambiaron nada.
 #
-# ⚠️ Y UNA TRAMPA DE LA QUE ESTE ARCHIVO YA FUE VÍCTIMA: el hash canónico se calcula con
-# `ensure_ascii=False`. El default de Python escapa los no-ASCII y da un hash DISTINTO al de
-# `JSON.stringify` de JS, que es el que pinean los consumidores. La primera versión de este script
-# imprimía ed65e3e6… en vez de cc276126… por exactamente eso.
+# ── EL ARREGLO ────────────────────────────────────────────────────────────────────────────
 #
-# ── LO QUE NO HACE ──────────────────────────────────────────────────────────────────────────
-# · No recibe llave: usa el firmante por defecto de `solana config`, que es la upgrade authority.
-# · No limpia buffers huérfanos viejos. Para eso, `--cleanup`, que cierra TODOS los de esa
-#   authority y se corre a conciencia.
+# Exportar el plan con `--export` y mandarlo NOSOTROS, en orden, esperando confirmacion entre cada
+# transaccion. Medido asi, la cuenta crece 968 bytes por transaccion, de 0 a 4982, siempre.
+#
+# ── LO QUE ESTE SCRIPT NO HACE, Y ES DELIBERADO ───────────────────────────────────────────
+# · No cierra el IDL publicado. Antes lo hacia como paso 0 "porque `create` no sobreescribe", y el
+#   2026-08-11 borro de la cadena un IDL bueno y no pudo reponerlo: el estado final fue PEOR que no
+#   haber corrido nada. `write` crea O ACTUALIZA, asi que cerrar nunca hizo falta.
+# · No recibe llave: usa el firmante por defecto de `solana config`.
 set -uo pipefail
 
 PROGRAM_ID="${PROGRAM_ID:-DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x}"
 RPC="${RPC:-https://api.devnet.solana.com}"
 IDL_FILE="${IDL_FILE:-target/idl/escrow.json}"
-MAX_TRIES="${MAX_TRIES:-6}"
-PRIORITY_FEES="${PRIORITY_FEES:-500000}"
-# ── LOS TIEMPOS QUE FUNCIONARON, y no son decorativos ──────────────────────────────────────
-# Con esperas de 4-5 s este script fallo 6 de 6. Con estas publico en la primera pasada del
-# create, despues de que `update-buffer` completara el buffer en 4 intentos. La escritura se
-# reparte en 6 transacciones y alguna se descarta; darle aire entre pasada y pasada es lo que
-# deja que las que faltan aterricen.
-ESPERA_TRAS_CLOSE="${ESPERA_TRAS_CLOSE:-20}"
-ESPERA_TRAS_BUFFER="${ESPERA_TRAS_BUFFER:-30}"
-ESPERA_ENTRE_RELLENOS="${ESPERA_ENTRE_RELLENOS:-40}"
-ESPERA_TRAS_CREATE="${ESPERA_TRAS_CREATE:-25}"
-PASADAS_RELLENO="${PASADAS_RELLENO:-6}"
-# Enfriamiento tras un 429. Largo a proposito: la ventana del limitador se reinicia con cada
-# pedido, asi que insistir rapido garantiza no salir nunca.
-ESPERA_POR_429="${ESPERA_POR_429:-120}"
-# La cuenta de metadata canonica del programa (PDA). Se necesita para verificar por RPC, porque
-# `fetch idl` depende de la misma herramienta que estamos diagnosticando.
 IDL_PDA="${IDL_PDA:-7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC}"
-
 PM=(npx --yes --package=@solana-program/program-metadata@0.5.1 -- program-metadata --rpc "$RPC")
 say() { printf '%s\n' "$*"; }
 hr()  { printf '%s\n' "────────────────────────────────────────────────────────"; }
 
-# Verifica una cuenta (buffer o metadata) LEYENDO la cadena: descomprime y compara hash canónico.
-# $1 = address, $2 = hash canónico esperado. exit 0 sólo si descomprime Y coincide.
+# Verifica la cuenta LEYENDO la cadena: descomprime y compara hash canonico.
+# 0 = coincide · 1 = distinto/ausente/truncada · 2 = no se pudo preguntar (NO es lo mismo que mal)
 verificar_onchain() {
   python3 - "$1" "$2" "$RPC" <<'PY'
 import sys, json, base64, zlib, hashlib, urllib.request
@@ -84,13 +58,11 @@ try:
         headers={"Content-Type":"application/json"})
     v = json.loads(urllib.request.urlopen(req, timeout=60).read())["result"]["value"]
 except Exception:
-    sys.exit(2)                      # no pudimos preguntar: NO es lo mismo que estar mal
+    sys.exit(2)
 if v is None: sys.exit(1)
 raw = base64.b64decode(v["data"][0])
-# NO se busca un magic hardcodeado. La cabecera zlib depende del NIVEL de compresion:
-# 78 01 (nivel 1), 78 5e, 78 9c (nivel 6, el que usa esta herramienta) y 78 da (nivel 9).
-# Clavar uno solo es un guard que falla cuando la herramienta cambie de nivel, y ese rojo
-# diria "truncado" sobre algo sano. Se prueba cada offset que arranque en 0x78.
+# La cabecera zlib depende del NIVEL de compresion (78 01 / 78 5e / 78 9c / 78 da), asi que se
+# prueba cada offset que arranque en 0x78 en vez de clavar un magic que envejece.
 d = None
 for i in range(len(raw) - 1):
     if raw[i] != 0x78: continue
@@ -98,62 +70,14 @@ for i in range(len(raw) - 1):
         d = json.loads(zlib.decompress(raw[i:]).decode("utf-8")); break
     except Exception:
         continue
-if d is None: sys.exit(1)            # truncado o no es un IDL: el caso que costo la noche
+if d is None: sys.exit(1)
 sys.exit(0 if hashlib.sha256(canon(d).encode()).hexdigest() == esperado else 1)
 PY
 }
 
-# ── PRECONDICION: el RPC responde? ──────────────────────────────────────────────────────────
-# Se chequea ANTES de tocar nada, y no es ceremonia: sin esto, un RPC inalcanzable se manifiesta
-# como 30 "no pudimos leer la cadena" repartidos en 6 intentos, y el mensaje final culpa a la
-# escritura cuando el problema era la URL. Paso exactamente eso con un `--api-key=TU_KEY` sin
-# reemplazar: el script molio 6 buffers para nada y el diagnostico final apuntaba al lugar
-# equivocado.
-#
-# Tres desenlaces separados, porque "no contesta" y "contesta que no" no son lo mismo:
-#   OK          -> sigue
-#   HTTP 4xx/5xx-> aborta nombrando el codigo (una key invalida da 401/403; un placeholder, 401)
-#   sin red     -> aborta diciendo que no se pudo preguntar
-if ! python3 - "$RPC" <<'PYRPC'
-import sys, json, urllib.request, urllib.error
-rpc = sys.argv[1]
-try:
-    req = urllib.request.Request(rpc, data=json.dumps({"jsonrpc":"2.0","id":1,"method":"getVersion"}).encode(),
-                                 headers={"Content-Type":"application/json"})
-    d = json.loads(urllib.request.urlopen(req, timeout=25).read())
-    if "error" in d:
-        print(f"   el RPC contesto un error: {json.dumps(d['error'])[:120]}"); sys.exit(1)
-    print(f"   RPC OK — solana-core {d['result'].get('solana-core','?')}")
-except urllib.error.HTTPError as e:
-    print(f"   el RPC contesto HTTP {e.code} {e.reason}")
-    if e.code in (401, 403):
-        print("   -> eso es una API key invalida o ausente. Si copiaste 'TU_KEY', reemplazala por la real.")
-    sys.exit(1)
-except Exception as e:
-    print(f"   no se pudo preguntar al RPC: {type(e).__name__}: {str(e)[:90]}")
-    sys.exit(1)
-PYRPC
-then
-  hr
-  say "❌ No arranco: el RPC no sirve. NO se toco nada en la cadena."
-  say "   RPC probado: ${RPC%%\?*}$([ "${RPC}" != "${RPC%%\?*}" ] && echo '?<...>')"
-  say ""
-  say "   Con la free tier de Helius alcanza (helius.dev, sin tarjeta):"
-  say "     RPC='https://devnet.helius-rpc.com/?api-key=LA_CLAVE_REAL' ./scripts/publish-idl.sh"
-  exit 1
-fi
-
-if [ "${1:-}" = "--cleanup" ]; then
-  say "Cerrando TODOS los buffers de la authority. Ctrl-C si no era eso."
-  AUTH="$("${PM[@]}" list-buffers 2>/dev/null | grep -oE '[1-9A-HJ-NP-Za-km-z]{43,44}' | head -1)"
-  "${PM[@]}" list-buffers "$AUTH" 2>/dev/null | grep -oE '[1-9A-HJ-NP-Za-km-z]{43,44}' | while read -r b; do
-    [ "$b" = "$AUTH" ] && continue
-    say "  cerrando $b"; "${PM[@]}" close-buffer "$b" >/dev/null 2>&1
-  done
-  say "Listo."; exit 0
-fi
-
-# ── Minificar, y calcular el hash canónico del contenido ────────────────────────────────────
+# ── Minificar y calcular el hash canonico ────────────────────────────────────────────────
+# ⚠️ `ensure_ascii=False` NO es opcional: el default de Python escapa los no-ASCII y da un hash
+# DISTINTO al de `JSON.stringify`, que es el que pinean los consumidores.
 MIN="$(mktemp --suffix=.json)"
 HASH="$(python3 - "$IDL_FILE" "$MIN" <<'PY'
 import json, sys, hashlib, io
@@ -167,133 +91,40 @@ print(hashlib.sha256(canon(d).encode()).hexdigest())
 PY
 )"
 hr
-say "IDL            : $IDL_FILE"
-say "Minificado     : $(wc -c < "$MIN") bytes (el original tiene $(wc -c < "$IDL_FILE"))"
-say "Hash canonico  : $HASH"
-say "Programa       : $PROGRAM_ID"
+say "IDL           : $IDL_FILE"
+say "Hash canonico : $HASH"
+say "Programa      : $PROGRAM_ID"
 hr
 
-# ── 🔴 EL IDL PUBLICADO NO SE TOCA HASTA TENER UN REEMPLAZO VERIFICADO ─────────────────────
-#
-# Acá había un `close idl` INCONDICIONAL como paso 0, con el argumento de que `create` no
-# sobreescribe. El argumento es cierto y la consecuencia era inaceptable: el 2026-08-11 este
-# script borró de la cadena un IDL publicado y verificado, falló las 6 pasadas siguientes, y dejó
-# el programa SIN IDL. `anchor idl fetch` pasó de servir el manual a no devolver nada, y los dos
-# consumidores quedaron pineados a un hash que la cadena ya no podía servir. El estado final fue
-# PEOR que no haber corrido nada.
-#
-# El orden correcto es el que cualquier despliegue usa: preparar el reemplazo completo, verificarlo,
-# y recién entonces tocar lo que está sirviendo. La ventana sin IDL pasa de "toda la corrida" a los
-# segundos entre el close y el create — y si el create falla, se reintenta con el buffer que YA
-# está verificado, no desde cero.
-#
-# El invariante, que es lo que hay que preservar si alguien reordena esto:
-#   la cuenta de metadata sólo se cierra cuando existe un buffer que descomprime al hash esperado.
-say "Estado actual del IDL en la cadena:"
-if verificar_onchain "$IDL_PDA" "$HASH"; then
-  say "  ya está publicado y coincide con este archivo. No hay nada que hacer."
-  say "  (para republicar igual: FORZAR=1 ./scripts/publish-idl.sh)"
-  [ "${FORZAR:-0}" != "1" ] && { rm -f "$MIN"; exit 0; }
-else
-  case $? in
-    1) say "  hay algo distinto de este archivo, o no hay nada. Se va a publicar." ;;
-    2) say "  no se pudo leer. Se sigue igual: el close es condicional más abajo." ;;
-  esac
+verificar_onchain "$IDL_PDA" "$HASH"
+case $? in
+  0) say "Ya esta publicado y coincide. Nada que hacer."; rm -f "$MIN"; exit 0 ;;
+  2) say "⚠️  No se pudo leer la cadena. Abortando: no se toca nada a ciegas."; rm -f "$MIN"; exit 1 ;;
+esac
+say "En la cadena hay algo distinto de este archivo, o no hay nada. Se publica."
+
+WALLET="$(solana config get 2>/dev/null | sed -n 's/^Keypair Path: //p' | tr -d '[:space:]')"
+[ -f "$WALLET" ] || { say "❌ No encuentro la llave de \`solana config\`."; rm -f "$MIN"; exit 1; }
+
+PLAN="$(mktemp)"
+say "Exportando el plan de transacciones…"
+"${PM[@]}" --export --export-encoding base64 write idl "$PROGRAM_ID" "$MIN" > "$PLAN" 2>&1
+N="$(grep -c '^\[Transaction' "$PLAN" || true)"
+[ "${N:-0}" -ge 1 ] || { say "❌ El export no produjo transacciones."; cat "$PLAN"; rm -f "$MIN" "$PLAN"; exit 1; }
+say "  $N transacciones"
+
+say "Enviandolas EN ORDEN (esto tarda; es el arreglo, no lentitud gratuita)…"
+node "$(dirname "$0")/enviar-plan-en-orden.cjs" "$PLAN" "$WALLET" 1
+
+hr
+verificar_onchain "$IDL_PDA" "$HASH"
+if [ $? -eq 0 ]; then
+  say "✅ PUBLICADO Y VERIFICADO leyendo la cadena."
+  say "   hash canonico: $HASH"
+  rm -f "$MIN" "$PLAN"; exit 0
 fi
-
-for i in $(seq 1 "$MAX_TRIES"); do
-  hr; say "Intento $i de $MAX_TRIES"
-  out="$("${PM[@]}" --priority-fees "$PRIORITY_FEES" create-buffer "$MIN" 2>&1)"
-  buf="$(printf '%s' "$out" | grep -oE 'buffer: [1-9A-HJ-NP-Za-km-z]{43,44}' | awk '{print $2}' | head -1)"
-  [ -z "$buf" ] && { say "  no se creó el buffer; reintento"; sleep 10; continue; }
-  say "  buffer: $buf"
-  sleep "$ESPERA_TRAS_BUFFER"
-
-  # ── RELLENAR, no descartar ──────────────────────────────────────────────────────────────
-  # El plan que la herramienta exporta son 6 transacciones: la #1 asigna la cuenta y las #2..#6
-  # escriben el contenido en 5 trozos. Medido: en la cadena NO hay ni una transaccion fallida de
-  # la authority, y el buffer igual queda parcial. Eso no es rechazo, es DESCARTE: alguna de las
-  # 5 escrituras nunca aterriza, y una transaccion descartada no deja rastro.
-  #
-  # Tirar el buffer y empezar de cero repite la loteria completa. `update-buffer` reescribe el
-  # contenido sobre el buffer que ya existe, asi que cada pasada tiene que acercarse.
-  completo=0
-  for intento_relleno in $(seq 1 "$PASADAS_RELLENO"); do
-    verificar_onchain "$buf" "$HASH"; rc=$?
-    if [ "$rc" -eq 0 ]; then completo=1; say "  buffer COMPLETO y con el hash esperado ✅"; break; fi
-    if [ "$rc" -eq 2 ]; then
-      say "  no pudimos leer la cadena (pasada $intento_relleno) — reintento la lectura"; sleep 15; continue
-    fi
-    say "  incompleto (pasada $intento_relleno) — rellenando con update-buffer"
-    # 🔴 ACA HABIA UN `>/dev/null 2>&1 || true`, y por eso una corrida entera de 36 pasadas
-    # fallidas no dijo NUNCA por que fallaba. La herramienta SI reporta el fallo; lo tirabamos.
-    # Medido el 2026-08-11: la causa real era `HTTP 429 Too Many Requests` del RPC publico, o sea
-    # limite de tasa — no el "descarte sin rastro" que este archivo daba por explicado. Tragarse
-    # la salida convirtio un diagnostico de una linea en una noche.
-    ub="$("${PM[@]}" --priority-fees "$PRIORITY_FEES" update-buffer "$buf" "$MIN" 2>&1)"
-    if printf '%s' "$ub" | grep -qiE '429|too many requests|rate.?limit'; then
-      say "  ⚠️  el RPC contesto 429 (limite de tasa). Enfriando ${ESPERA_POR_429}s antes de seguir."
-      say "     Seguir martillando lo empeora: cada intento reinicia la ventana del limitador."
-      sleep "$ESPERA_POR_429"
-    else
-      printf '%s' "$ub" | grep -iE '^\s*\[Error\]' | head -2 | sed 's/^/     /'
-      sleep "$ESPERA_ENTRE_RELLENOS"
-    fi
-  done
-  if [ "$completo" -ne 1 ]; then
-    say "  no se pudo completar este buffer — lo cierro y arranco otro"
-    "${PM[@]}" close-buffer "$buf" >/dev/null 2>&1 || true; sleep 5; continue
-  fi
-
-  # Recien ACA se toca lo que esta sirviendo: hay un buffer que descomprime al hash esperado.
-  # `create` no sobreescribe, asi que el close es inevitable — pero ya no es una apuesta.
-  say "  buffer verificado. Cierro el IDL viejo y publico el nuevo."
-  "${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true
-  sleep "$ESPERA_TRAS_CLOSE"
-  "${PM[@]}" create idl "$PROGRAM_ID" --buffer "$buf" >/dev/null 2>&1 || true
-  sleep "$ESPERA_TRAS_CREATE"
-
-  tmp="$(mktemp)"
-  "${PM[@]}" fetch idl "$PROGRAM_ID" > "$tmp" 2>&1
-  if python3 - "$tmp" "$HASH" <<'PY'
-import sys, json, hashlib, io
-def canon(v):
-    if isinstance(v, dict): return "{" + ",".join(json.dumps(k, ensure_ascii=False)+":"+canon(v[k]) for k in sorted(v)) + "}"
-    if isinstance(v, list): return "[" + ",".join(canon(x) for x in v) + "]"
-    return json.dumps(v, ensure_ascii=False)
-try:
-    d = json.loads(io.open(sys.argv[1], encoding="utf-8").read().strip())
-except Exception:
-    sys.exit(1)
-sys.exit(0 if hashlib.sha256(canon(d).encode()).hexdigest() == sys.argv[2] else 1)
-PY
-  then
-    hr; say "✅ PUBLICADO Y VERIFICADO."
-    say "   hash canonico en cadena: $HASH"
-    say ""
-    say "   Pasale ese hash a Claude para que re-pinee chaski-v3 y wasiai-facilitator."
-    rm -f "$tmp" "$MIN"; exit 0
-  fi
-  rm -f "$tmp"
-  # El buffer verificado NO se cierra: reconstruirlo es lo caro y lo que falla. Se reintenta el
-  # create sobre el MISMO buffer, que es la parte que ya sabemos que esta bien.
-  say "  el create quedó a medias; cierro la metadata y reintento con el MISMO buffer"
-  "${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true; sleep "$ESPERA_TRAS_CLOSE"
-  for reintento_create in 1 2 3; do
-    "${PM[@]}" create idl "$PROGRAM_ID" --buffer "$buf" >/dev/null 2>&1 || true
-    sleep "$ESPERA_TRAS_CREATE"
-    if verificar_onchain "$IDL_PDA" "$HASH"; then
-      hr; say "✅ PUBLICADO Y VERIFICADO (reintento $reintento_create del create)."
-      say "   hash canonico en cadena: $HASH"
-      rm -f "$MIN"; exit 0
-    fi
-    "${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true; sleep "$ESPERA_TRAS_CLOSE"
-  done
-  say "  buffer sano que queda para reintentar a mano: $buf"
-done
-
-hr
-say "❌ No se logró en $MAX_TRIES intentos. La cuenta queda CERRADA a proposito:"
-say "   ausente es un estado honesto, a medias parece publicado y no lo esta."
-say "   Reintentá con MAX_TRIES=12 ./scripts/publish-idl.sh"
+say "❌ La cuenta NO quedo con el contenido esperado."
+say "   El plan quedo en: $PLAN"
+say "   Se puede retomar desde la transaccion N sin rehacer las anteriores:"
+say "     node scripts/enviar-plan-en-orden.cjs $PLAN \"\$(solana config get | sed -n 's/^Keypair Path: //p')\" N"
 rm -f "$MIN"; exit 1
