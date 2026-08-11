@@ -87,6 +87,46 @@ sys.exit(0 if hashlib.sha256(canon(d).encode()).hexdigest() == esperado else 1)
 PY
 }
 
+# ── PRECONDICION: el RPC responde? ──────────────────────────────────────────────────────────
+# Se chequea ANTES de tocar nada, y no es ceremonia: sin esto, un RPC inalcanzable se manifiesta
+# como 30 "no pudimos leer la cadena" repartidos en 6 intentos, y el mensaje final culpa a la
+# escritura cuando el problema era la URL. Paso exactamente eso con un `--api-key=TU_KEY` sin
+# reemplazar: el script molio 6 buffers para nada y el diagnostico final apuntaba al lugar
+# equivocado.
+#
+# Tres desenlaces separados, porque "no contesta" y "contesta que no" no son lo mismo:
+#   OK          -> sigue
+#   HTTP 4xx/5xx-> aborta nombrando el codigo (una key invalida da 401/403; un placeholder, 401)
+#   sin red     -> aborta diciendo que no se pudo preguntar
+if ! python3 - "$RPC" <<'PYRPC'
+import sys, json, urllib.request, urllib.error
+rpc = sys.argv[1]
+try:
+    req = urllib.request.Request(rpc, data=json.dumps({"jsonrpc":"2.0","id":1,"method":"getVersion"}).encode(),
+                                 headers={"Content-Type":"application/json"})
+    d = json.loads(urllib.request.urlopen(req, timeout=25).read())
+    if "error" in d:
+        print(f"   el RPC contesto un error: {json.dumps(d['error'])[:120]}"); sys.exit(1)
+    print(f"   RPC OK — solana-core {d['result'].get('solana-core','?')}")
+except urllib.error.HTTPError as e:
+    print(f"   el RPC contesto HTTP {e.code} {e.reason}")
+    if e.code in (401, 403):
+        print("   -> eso es una API key invalida o ausente. Si copiaste 'TU_KEY', reemplazala por la real.")
+    sys.exit(1)
+except Exception as e:
+    print(f"   no se pudo preguntar al RPC: {type(e).__name__}: {str(e)[:90]}")
+    sys.exit(1)
+PYRPC
+then
+  hr
+  say "❌ No arranco: el RPC no sirve. NO se toco nada en la cadena."
+  say "   RPC probado: ${RPC%%\?*}$([ "${RPC}" != "${RPC%%\?*}" ] && echo '?<...>')"
+  say ""
+  say "   Con la free tier de Helius alcanza (helius.dev, sin tarjeta):"
+  say "     RPC='https://devnet.helius-rpc.com/?api-key=LA_CLAVE_REAL' ./scripts/publish-idl.sh"
+  exit 1
+fi
+
 if [ "${1:-}" = "--cleanup" ]; then
   say "Cerrando TODOS los buffers de la authority. Ctrl-C si no era eso."
   AUTH="$("${PM[@]}" list-buffers 2>/dev/null | grep -oE '[1-9A-HJ-NP-Za-km-z]{43,44}' | head -1)"
