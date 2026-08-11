@@ -1,37 +1,36 @@
 #!/usr/bin/env bash
-# Publica el IDL en la cuenta de metadata canónica del programa, reintentando hasta que la
-# escritura quede COMPLETA.
+# Publica el IDL en la cuenta de metadata canónica del programa.
 #
-# ── POR QUÉ EXISTE ──────────────────────────────────────────────────────────────────────────
+# ── LAS TRES COSAS QUE ESTE SCRIPT SABE Y QUE CUESTAN UNA NOCHE AVERIGUAR ───────────────────
 #
-# `program-metadata` sube el payload en VARIAS transacciones. Cuando una se cae, deja la cuenta
-# (o el buffer) escrita a medias y reporta:
+# 1) MINIFICAR EL IDL ANTES DE SUBIRLO. Es la diferencia entre que funcione y que no.
+#    `anchor build` escribe `target/idl/escrow.json` INDENTADO: 37530 bytes crudos, 5532
+#    comprimidos. El mismo IDL minificado son 16020 crudos y 4883 comprimidos. El IDL que SÍ se
+#    publicó con éxito (canónico d295b7c7) medía 15862 / 4894 — o sea del tamaño del minificado.
+#    Con la versión indentada la escritura se corta SIEMPRE: 6 intentos, 6 buffers truncados.
+#    Minificar NO cambia el hash canónico, porque el canónico re-serializa con las claves
+#    ordenadas; el formato del archivo es irrelevante para él.
 #
-#   [Error] The provided transaction plan failed to execute.
+# 2) `fetch-buffer` ESTÁ ROTO en esta versión del CLI. Devuelve `[Error] undefined` incluso sobre
+#    un buffer sano. Así que NO se puede usar para verificar. Este script lee la cuenta por RPC,
+#    busca el magic de zlib (`789c`), descomprime y compara el hash canónico. Eso sí es una
+#    verificación.
 #
-# Medido el 2026-08-11: ese mensaje NO es confiable en ninguna de las dos direcciones.
-#   · Un `close` que reportó ERROR sí entró: la cuenta desapareció de la cadena.
-#   · Un `create` que reportó ERROR dejó la cuenta creada con 926 bytes de un stream zlib que
-#     necesita ~5,5 KiB.
-#   · `getSignaturesForAddress` sobre la authority devolvió 15 transacciones y NINGUNA con error.
+# 3) EL EXIT STATUS DE LA HERRAMIENTA NO ES EVIDENCIA, en ninguna de las dos direcciones. Medido:
+#    un `close` que reportó [Error] entró igual (la cuenta desapareció de la cadena), y un
+#    `create` que reportó [Error] dejó la cuenta con 926 bytes de un stream que necesita ~4,9 KiB.
+#    `getSignaturesForAddress` sobre la authority: 15 transacciones, CERO con error. Todo se
+#    decide LEYENDO la cadena.
 #
-# Y es FLAKY, no determinista: `list-buffers` mostró 8 buffers huérfanos de 4,5 a 5,5 KiB, todos
-# por debajo del tamaño completo. O sea que fallar es lo habitual y acertar es lo raro. Repetir a
-# mano hasta que salga es el trabajo que hace este script, pero con la verificación que faltaba.
+# ⚠️ Y UNA TRAMPA DE LA QUE ESTE ARCHIVO YA FUE VÍCTIMA: el hash canónico se calcula con
+# `ensure_ascii=False`. El default de Python escapa los no-ASCII y da un hash DISTINTO al de
+# `JSON.stringify` de JS, que es el que pinean los consumidores. La primera versión de este script
+# imprimía ed65e3e6… en vez de cc276126… por exactamente eso.
 #
-# ── LA REGLA QUE ORDENA TODO ────────────────────────────────────────────────────────────────
-#
-# El exit status de la herramienta NO es evidencia. Después de cada paso se LEE la cadena y se
-# valida que lo leído sea JSON parseable. Un stream truncado se detecta porque `fetch` devuelve
-# hex (arranca en `789c`, el magic de zlib) en vez de un objeto.
-#
-# ── LO QUE ESTE SCRIPT NO HACE ──────────────────────────────────────────────────────────────
-#
-# · No firma con una llave que le pases: usa el firmante por defecto de tu `solana config`, que es
-#   el que ya resultó ser la upgrade authority. Si ese no es el correcto, la cadena lo rechaza.
-# · No arregla la causa raíz del corte, que está del lado de la herramienta. Reintenta.
-# · No limpia los buffers huérfanos VIEJOS: para eso está `--cleanup`, que se corre aparte y a
-#   conciencia, porque cierra TODO buffer de esa authority.
+# ── LO QUE NO HACE ──────────────────────────────────────────────────────────────────────────
+# · No recibe llave: usa el firmante por defecto de `solana config`, que es la upgrade authority.
+# · No limpia buffers huérfanos viejos. Para eso, `--cleanup`, que cierra TODOS los de esa
+#   authority y se corre a conciencia.
 set -uo pipefail
 
 PROGRAM_ID="${PROGRAM_ID:-DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x}"
@@ -41,106 +40,128 @@ MAX_TRIES="${MAX_TRIES:-6}"
 PRIORITY_FEES="${PRIORITY_FEES:-500000}"
 
 PM=(npx --yes --package=@solana-program/program-metadata@0.5.1 -- program-metadata --rpc "$RPC")
-
 say() { printf '%s\n' "$*"; }
 hr()  { printf '%s\n' "────────────────────────────────────────────────────────"; }
 
-# ¿La salida es un IDL completo? Único criterio: parsea como JSON y trae instrucciones.
-es_json_completo() {
-  python3 - "$1" <<'PY'
-import json, sys
+# Verifica una cuenta (buffer o metadata) LEYENDO la cadena: descomprime y compara hash canónico.
+# $1 = address, $2 = hash canónico esperado. exit 0 sólo si descomprime Y coincide.
+verificar_onchain() {
+  python3 - "$1" "$2" "$RPC" <<'PY'
+import sys, json, base64, zlib, hashlib, urllib.request
+addr, esperado, rpc = sys.argv[1], sys.argv[2], sys.argv[3]
+def canon(v):
+    if isinstance(v, dict): return "{" + ",".join(json.dumps(k, ensure_ascii=False)+":"+canon(v[k]) for k in sorted(v)) + "}"
+    if isinstance(v, list): return "[" + ",".join(canon(x) for x in v) + "]"
+    return json.dumps(v, ensure_ascii=False)
 try:
-    d = json.load(open(sys.argv[1], encoding="utf-8"))
+    req = urllib.request.Request(rpc, data=json.dumps({"jsonrpc":"2.0","id":1,"method":"getAccountInfo",
+        "params":[addr,{"encoding":"base64","commitment":"finalized"}]}).encode(),
+        headers={"Content-Type":"application/json"})
+    v = json.loads(urllib.request.urlopen(req, timeout=60).read())["result"]["value"]
 except Exception:
-    sys.exit(1)
-sys.exit(0 if isinstance(d, dict) and d.get("instructions") else 1)
+    sys.exit(2)                      # no pudimos preguntar: NO es lo mismo que estar mal
+if v is None: sys.exit(1)
+raw = base64.b64decode(v["data"][0])
+# NO se busca un magic hardcodeado. La cabecera zlib depende del NIVEL de compresion:
+# 78 01 (nivel 1), 78 5e, 78 9c (nivel 6, el que usa esta herramienta) y 78 da (nivel 9).
+# Clavar uno solo es un guard que falla cuando la herramienta cambie de nivel, y ese rojo
+# diria "truncado" sobre algo sano. Se prueba cada offset que arranque en 0x78.
+d = None
+for i in range(len(raw) - 1):
+    if raw[i] != 0x78: continue
+    try:
+        d = json.loads(zlib.decompress(raw[i:]).decode("utf-8")); break
+    except Exception:
+        continue
+if d is None: sys.exit(1)            # truncado o no es un IDL: el caso que costo la noche
+sys.exit(0 if hashlib.sha256(canon(d).encode()).hexdigest() == esperado else 1)
 PY
 }
 
 if [ "${1:-}" = "--cleanup" ]; then
-  say "Cerrando TODOS los buffers de la authority. Ctrl-C ahora si no era lo que querías."
+  say "Cerrando TODOS los buffers de la authority. Ctrl-C si no era eso."
   AUTH="$("${PM[@]}" list-buffers 2>/dev/null | grep -oE '[1-9A-HJ-NP-Za-km-z]{43,44}' | head -1)"
   "${PM[@]}" list-buffers "$AUTH" 2>/dev/null | grep -oE '[1-9A-HJ-NP-Za-km-z]{43,44}' | while read -r b; do
     [ "$b" = "$AUTH" ] && continue
-    say "  cerrando $b"
-    "${PM[@]}" close-buffer "$b" >/dev/null 2>&1
+    say "  cerrando $b"; "${PM[@]}" close-buffer "$b" >/dev/null 2>&1
   done
-  say "Listo."
-  exit 0
+  say "Listo."; exit 0
 fi
 
-hr; say "IDL a publicar : $IDL_FILE"; say "Programa       : $PROGRAM_ID"; hr
+# ── Minificar, y calcular el hash canónico del contenido ────────────────────────────────────
+MIN="$(mktemp --suffix=.json)"
+HASH="$(python3 - "$IDL_FILE" "$MIN" <<'PY'
+import json, sys, hashlib, io
+d = json.load(io.open(sys.argv[1], encoding="utf-8"))
+io.open(sys.argv[2], "w", encoding="utf-8").write(json.dumps(d, separators=(",", ":"), ensure_ascii=False))
+def canon(v):
+    if isinstance(v, dict): return "{" + ",".join(json.dumps(k, ensure_ascii=False)+":"+canon(v[k]) for k in sorted(v)) + "}"
+    if isinstance(v, list): return "[" + ",".join(canon(x) for x in v) + "]"
+    return json.dumps(v, ensure_ascii=False)
+print(hashlib.sha256(canon(d).encode()).hexdigest())
+PY
+)"
+hr
+say "IDL            : $IDL_FILE"
+say "Minificado     : $(wc -c < "$MIN") bytes (el original tiene $(wc -c < "$IDL_FILE"))"
+say "Hash canonico  : $HASH"
+say "Programa       : $PROGRAM_ID"
+hr
 
-# ── Paso 0: si la cuenta existe (completa o a medias), se cierra ────────────────────────────
-# `create` NO sobreescribe, y crecer una cuenta en su lugar es justo donde la herramienta se
-# rompe. Se parte siempre de cuenta ausente, que es el caso que sí funciona.
-tmp="$(mktemp)"
-if "${PM[@]}" fetch idl "$PROGRAM_ID" > "$tmp" 2>&1; then
-  if es_json_completo "$tmp"; then
-    say "La cadena YA sirve un IDL completo. Si querés reemplazarlo igual, cerrá a mano y volvé."
-    exit 0
-  fi
-fi
-if ! grep -q "Account not found" "$tmp"; then
-  say "Hay una cuenta de metadata (posiblemente a medias). Cerrándola…"
-  "${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true
-  sleep 3
-fi
+# ── Paso 0: partir SIEMPRE de cuenta ausente ────────────────────────────────────────────────
+# `create` no sobreescribe, y crecer la cuenta en su lugar es justo donde la herramienta rompe.
+say "Cerrando la cuenta de metadata si existe…"
+"${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true
+sleep 3
 
-# ── Paso 1..N: buffer, VERIFICAR, y recién entonces crear ───────────────────────────────────
 for i in $(seq 1 "$MAX_TRIES"); do
   hr; say "Intento $i de $MAX_TRIES"
-
-  out="$("${PM[@]}" --priority-fees "$PRIORITY_FEES" create-buffer "$IDL_FILE" 2>&1)"
+  out="$("${PM[@]}" --priority-fees "$PRIORITY_FEES" create-buffer "$MIN" 2>&1)"
   buf="$(printf '%s' "$out" | grep -oE 'buffer: [1-9A-HJ-NP-Za-km-z]{43,44}' | awk '{print $2}' | head -1)"
-  if [ -z "$buf" ]; then
-    say "  no se pudo ni crear el buffer; reintentando"
-    sleep 5; continue
-  fi
+  [ -z "$buf" ] && { say "  no se creó el buffer; reintento"; sleep 5; continue; }
   say "  buffer: $buf"
 
-  # 🔴 LA PUERTA QUE FALTABA. Sin esto se publica desde un buffer truncado y queda algo que
-  # PARECE publicado y no lo está — que es peor que no publicar, porque no falla ruidoso.
-  if "${PM[@]}" fetch-buffer "$buf" > "$tmp" 2>&1 && es_json_completo "$tmp"; then
-    say "  buffer COMPLETO ✅"
+  verificar_onchain "$buf" "$HASH"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    say "  buffer COMPLETO y con el hash esperado ✅"
+  elif [ "$rc" -eq 2 ]; then
+    say "  no pudimos leer la cadena — NO lo cierro, puede estar bien; reintento"; sleep 8; continue
   else
-    say "  buffer truncado ❌ — lo cierro y reintento"
-    "${PM[@]}" close-buffer "$buf" >/dev/null 2>&1 || true
-    sleep 5; continue
+    say "  buffer truncado o distinto ❌ — lo cierro y reintento"
+    "${PM[@]}" close-buffer "$buf" >/dev/null 2>&1 || true; sleep 5; continue
   fi
 
   "${PM[@]}" create idl "$PROGRAM_ID" --buffer "$buf" >/dev/null 2>&1 || true
   sleep 3
 
-  # Y la verificación final es una LECTURA, nunca el exit code del create.
-  if "${PM[@]}" fetch idl "$PROGRAM_ID" > "$tmp" 2>&1 && es_json_completo "$tmp"; then
-    hr
-    say "✅ PUBLICADO. La cadena sirve un IDL completo."
-    python3 - "$tmp" <<'PY'
-import json, sys, hashlib
-d = json.load(open(sys.argv[1], encoding="utf-8"))
+  tmp="$(mktemp)"
+  "${PM[@]}" fetch idl "$PROGRAM_ID" > "$tmp" 2>&1
+  if python3 - "$tmp" "$HASH" <<'PY'
+import sys, json, hashlib, io
 def canon(v):
-    if isinstance(v, dict):
-        return "{" + ",".join(json.dumps(k) + ":" + canon(v[k]) for k in sorted(v)) + "}"
-    if isinstance(v, list):
-        return "[" + ",".join(canon(x) for x in v) + "]"
-    return json.dumps(v)
-print("   instrucciones :", len(d.get("instructions") or []))
-print("   hash canonico :", hashlib.sha256(canon(d).encode()).hexdigest())
+    if isinstance(v, dict): return "{" + ",".join(json.dumps(k, ensure_ascii=False)+":"+canon(v[k]) for k in sorted(v)) + "}"
+    if isinstance(v, list): return "[" + ",".join(canon(x) for x in v) + "]"
+    return json.dumps(v, ensure_ascii=False)
+try:
+    d = json.loads(io.open(sys.argv[1], encoding="utf-8").read().strip())
+except Exception:
+    sys.exit(1)
+sys.exit(0 if hashlib.sha256(canon(d).encode()).hexdigest() == sys.argv[2] else 1)
 PY
+  then
+    hr; say "✅ PUBLICADO Y VERIFICADO."
+    say "   hash canonico en cadena: $HASH"
     say ""
     say "   Pasale ese hash a Claude para que re-pinee chaski-v3 y wasiai-facilitator."
-    rm -f "$tmp"; exit 0
+    rm -f "$tmp" "$MIN"; exit 0
   fi
-
-  say "  el create quedó a medias; cierro la cuenta y reintento"
-  "${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true
-  sleep 5
+  rm -f "$tmp"
+  say "  el create quedó a medias; cierro y reintento"
+  "${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true; sleep 5
 done
 
 hr
-say "❌ No se logró en $MAX_TRIES intentos."
-say "   La cuenta quedó CERRADA (sin IDL publicado), que es el estado honesto:"
-say "   mejor ausente que a medias, porque a medias parece publicado."
+say "❌ No se logró en $MAX_TRIES intentos. La cuenta queda CERRADA a proposito:"
+say "   ausente es un estado honesto, a medias parece publicado y no lo esta."
 say "   Reintentá con MAX_TRIES=12 ./scripts/publish-idl.sh"
-rm -f "$tmp"; exit 1
+rm -f "$MIN"; exit 1
