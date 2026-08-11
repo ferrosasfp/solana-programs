@@ -57,6 +57,12 @@ ESPERA_TRAS_BUFFER="${ESPERA_TRAS_BUFFER:-30}"
 ESPERA_ENTRE_RELLENOS="${ESPERA_ENTRE_RELLENOS:-40}"
 ESPERA_TRAS_CREATE="${ESPERA_TRAS_CREATE:-25}"
 PASADAS_RELLENO="${PASADAS_RELLENO:-6}"
+# Enfriamiento tras un 429. Largo a proposito: la ventana del limitador se reinicia con cada
+# pedido, asi que insistir rapido garantiza no salir nunca.
+ESPERA_POR_429="${ESPERA_POR_429:-120}"
+# La cuenta de metadata canonica del programa (PDA). Se necesita para verificar por RPC, porque
+# `fetch idl` depende de la misma herramienta que estamos diagnosticando.
+IDL_PDA="${IDL_PDA:-7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC}"
 
 PM=(npx --yes --package=@solana-program/program-metadata@0.5.1 -- program-metadata --rpc "$RPC")
 say() { printf '%s\n' "$*"; }
@@ -167,11 +173,33 @@ say "Hash canonico  : $HASH"
 say "Programa       : $PROGRAM_ID"
 hr
 
-# ── Paso 0: partir SIEMPRE de cuenta ausente ────────────────────────────────────────────────
-# `create` no sobreescribe, y crecer la cuenta en su lugar es justo donde la herramienta rompe.
-say "Cerrando la cuenta de metadata si existe…"
-"${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true
-sleep "$ESPERA_TRAS_CLOSE"
+# ── 🔴 EL IDL PUBLICADO NO SE TOCA HASTA TENER UN REEMPLAZO VERIFICADO ─────────────────────
+#
+# Acá había un `close idl` INCONDICIONAL como paso 0, con el argumento de que `create` no
+# sobreescribe. El argumento es cierto y la consecuencia era inaceptable: el 2026-08-11 este
+# script borró de la cadena un IDL publicado y verificado, falló las 6 pasadas siguientes, y dejó
+# el programa SIN IDL. `anchor idl fetch` pasó de servir el manual a no devolver nada, y los dos
+# consumidores quedaron pineados a un hash que la cadena ya no podía servir. El estado final fue
+# PEOR que no haber corrido nada.
+#
+# El orden correcto es el que cualquier despliegue usa: preparar el reemplazo completo, verificarlo,
+# y recién entonces tocar lo que está sirviendo. La ventana sin IDL pasa de "toda la corrida" a los
+# segundos entre el close y el create — y si el create falla, se reintenta con el buffer que YA
+# está verificado, no desde cero.
+#
+# El invariante, que es lo que hay que preservar si alguien reordena esto:
+#   la cuenta de metadata sólo se cierra cuando existe un buffer que descomprime al hash esperado.
+say "Estado actual del IDL en la cadena:"
+if verificar_onchain "$IDL_PDA" "$HASH"; then
+  say "  ya está publicado y coincide con este archivo. No hay nada que hacer."
+  say "  (para republicar igual: FORZAR=1 ./scripts/publish-idl.sh)"
+  [ "${FORZAR:-0}" != "1" ] && { rm -f "$MIN"; exit 0; }
+else
+  case $? in
+    1) say "  hay algo distinto de este archivo, o no hay nada. Se va a publicar." ;;
+    2) say "  no se pudo leer. Se sigue igual: el close es condicional más abajo." ;;
+  esac
+fi
 
 for i in $(seq 1 "$MAX_TRIES"); do
   hr; say "Intento $i de $MAX_TRIES"
@@ -197,14 +225,31 @@ for i in $(seq 1 "$MAX_TRIES"); do
       say "  no pudimos leer la cadena (pasada $intento_relleno) — reintento la lectura"; sleep 15; continue
     fi
     say "  incompleto (pasada $intento_relleno) — rellenando con update-buffer"
-    "${PM[@]}" --priority-fees "$PRIORITY_FEES" update-buffer "$buf" "$MIN" >/dev/null 2>&1 || true
-    sleep "$ESPERA_ENTRE_RELLENOS"
+    # 🔴 ACA HABIA UN `>/dev/null 2>&1 || true`, y por eso una corrida entera de 36 pasadas
+    # fallidas no dijo NUNCA por que fallaba. La herramienta SI reporta el fallo; lo tirabamos.
+    # Medido el 2026-08-11: la causa real era `HTTP 429 Too Many Requests` del RPC publico, o sea
+    # limite de tasa — no el "descarte sin rastro" que este archivo daba por explicado. Tragarse
+    # la salida convirtio un diagnostico de una linea en una noche.
+    ub="$("${PM[@]}" --priority-fees "$PRIORITY_FEES" update-buffer "$buf" "$MIN" 2>&1)"
+    if printf '%s' "$ub" | grep -qiE '429|too many requests|rate.?limit'; then
+      say "  ⚠️  el RPC contesto 429 (limite de tasa). Enfriando ${ESPERA_POR_429}s antes de seguir."
+      say "     Seguir martillando lo empeora: cada intento reinicia la ventana del limitador."
+      sleep "$ESPERA_POR_429"
+    else
+      printf '%s' "$ub" | grep -iE '^\s*\[Error\]' | head -2 | sed 's/^/     /'
+      sleep "$ESPERA_ENTRE_RELLENOS"
+    fi
   done
   if [ "$completo" -ne 1 ]; then
     say "  no se pudo completar este buffer — lo cierro y arranco otro"
     "${PM[@]}" close-buffer "$buf" >/dev/null 2>&1 || true; sleep 5; continue
   fi
 
+  # Recien ACA se toca lo que esta sirviendo: hay un buffer que descomprime al hash esperado.
+  # `create` no sobreescribe, asi que el close es inevitable — pero ya no es una apuesta.
+  say "  buffer verificado. Cierro el IDL viejo y publico el nuevo."
+  "${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true
+  sleep "$ESPERA_TRAS_CLOSE"
   "${PM[@]}" create idl "$PROGRAM_ID" --buffer "$buf" >/dev/null 2>&1 || true
   sleep "$ESPERA_TRAS_CREATE"
 
@@ -230,8 +275,21 @@ PY
     rm -f "$tmp" "$MIN"; exit 0
   fi
   rm -f "$tmp"
-  say "  el create quedó a medias; cierro y reintento"
+  # El buffer verificado NO se cierra: reconstruirlo es lo caro y lo que falla. Se reintenta el
+  # create sobre el MISMO buffer, que es la parte que ya sabemos que esta bien.
+  say "  el create quedó a medias; cierro la metadata y reintento con el MISMO buffer"
   "${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true; sleep "$ESPERA_TRAS_CLOSE"
+  for reintento_create in 1 2 3; do
+    "${PM[@]}" create idl "$PROGRAM_ID" --buffer "$buf" >/dev/null 2>&1 || true
+    sleep "$ESPERA_TRAS_CREATE"
+    if verificar_onchain "$IDL_PDA" "$HASH"; then
+      hr; say "✅ PUBLICADO Y VERIFICADO (reintento $reintento_create del create)."
+      say "   hash canonico en cadena: $HASH"
+      rm -f "$MIN"; exit 0
+    fi
+    "${PM[@]}" close idl "$PROGRAM_ID" >/dev/null 2>&1 || true; sleep "$ESPERA_TRAS_CLOSE"
+  done
+  say "  buffer sano que queda para reintentar a mano: $buf"
 done
 
 hr
