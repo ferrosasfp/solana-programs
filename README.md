@@ -53,12 +53,19 @@ Read on devnet at the time of writing:
 | ProgramData bytes reserved | 412613 (extended by 150000 on 2026-08-01; see [The size preflight](#the-size-preflight)) |
 | Deployed bytes, without trailing padding | 276785 |
 | `sha256` of the same bytes without trailing padding (`verify-hash`) | `2bd31779382f0bfc35f8470bc0ca1185c985d4c164fa05ec291658e05eb41bb6` |
-| `sha256` of the deployed bytes (`artifact-sha256`) | ⚠️ **not re-read after the 2026-08-10 deploy.** The value for the 2026-08-05 binary was `59ec1098cd64d04cab1063fd837e84a70c7962741a3c14932d249cab28b328ef`, and it does not describe what is on chain now. |
+| `sha256` of the deployed bytes (`artifact-sha256`) | `940096242ef430386f9e045aec5ddbe398c683883b2e42fa7d8c8da5d8045032` |
 
-The `verify-hash` above was read back from the chain on 2026-08-10 and matched the local build byte for
-byte: `target/deploy/escrow.so` is 276800 bytes, 276785 once trailing zeros are stripped, and hashing
-those stripped bytes gives exactly the value in the table. Re-derive both with
-`python3 scripts/onchain-hash.py`.
+Both hashes above were read back from the chain and reproduced from source, by **two independent
+builders**: by hand on 2026-08-10 (`target/deploy/escrow.so` is 276800 bytes, 276785 once trailing zeros
+are stripped, and hashing those stripped bytes gives the `verify-hash` in the table), and on 2026-08-11
+by the `reproducible-build` job, which rebuilt in the pinned container on a GitHub runner and printed
+`built verify hash` == `on-chain verify hash`. Re-derive both with `python3 scripts/onchain-hash.py`.
+
+⚠️ That CI job was **red from 2026-08-10 until 2026-08-11**, and the reason is worth keeping: the
+rebuild already matched the chain, but `verified-build.yml` still pinned the hashes of the 2026-08-05
+binary. The failure message said the deployed bytes did not match, which points at the chain; what had
+actually gone stale was the pin. `verified-build.yml` now carries a step that fails if a pinned hash is
+not also published in this file, so the two places cannot drift apart in silence again.
 
 The deploy transaction of the **previous** deploy (2026-08-05, WKH-326, slot `481495859`) was
 [`UjFgwnmU…jK7F`](https://explorer.solana.com/tx/UjFgwnmUviG9kRVfCNB1kcKeGQAYxsJkZpKQHycM8o6KFFJhDETfzAQyjccQbXd8TgcasN7gyHazjfWhQudjK7F?cluster=devnet).

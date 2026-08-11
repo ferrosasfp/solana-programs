@@ -38,11 +38,23 @@ env:
   # reproduce it. It is still pinned here because it describes the account and a
   # redeploy moves it, but it is compared only against the chain, never against a
   # rebuild. See README.md, Reproducing the deployed binary.
-  EXPECTED_ARTIFACT_SHA256: "59ec1098cd64d04cab1063fd837e84a70c7962741a3c14932d249cab28b328ef"
+  #
+  # 🔴 RE-LEÍDOS EL 2026-08-11, tras el deploy de WKH-343 (slot 482775110). Los valores anteriores
+  # describían el binario del 2026-08-05 y este workflow quedó ROJO desde el merge `2e74da2` — no por
+  # un problema del código, sino porque estos dos literales no se movieron con el deploy. Es la misma
+  # clase de defecto que el propio comentario de arriba dice que este control existe para cazar, con la
+  # diferencia de que acá el control se disparó contra sí mismo.
+  #
+  # ⚠️ Y OJO CON LA PROSA DE ESTE ARCHIVO: dice "the hashes published in README.md", pero este workflow
+  # NO lee el README — son literales de acá. Medido: cero `grep` sobre README.md en todo el yml. Que
+  # coincidan con el README es una convención que dependía de que un humano escribiera el mismo número
+  # en dos lugares. El paso "README.md agrees with the pinned hashes" de abajo lo convierte en algo
+  # verificable.
+  EXPECTED_ARTIFACT_SHA256: "940096242ef430386f9e045aec5ddbe398c683883b2e42fa7d8c8da5d8045032"
   # sha256 over the same bytes with trailing zero padding removed, which is the
   # convention solana-verify uses. This is the value a rebuild can reproduce, so
   # it carries the byte-for-byte claim on its own now.
-  EXPECTED_VERIFY_HASH: "455e4e36fa7c63be568d470a89f7eded9aff5806b198340936a578810be09291"
+  EXPECTED_VERIFY_HASH: "2bd31779382f0bfc35f8470bc0ca1185c985d4c164fa05ec291658e05eb41bb6"
   # Does the source in this repository still build the bytes that are deployed?
   #
   # "true" since 2026-08-01 and re-confirmed on 2026-08-05: WKH-326 was deployed
@@ -65,6 +77,33 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Corre ANTES del chequeo contra la cadena, a propósito: si estos dos literales y el README no
+      # dicen lo mismo, el resto del job no puede sostener la frase "the hashes published in README.md".
+      #
+      # POR QUÉ EXISTE: hasta el 2026-08-11 esa frase era una convención sin verificar. Este workflow
+      # nunca leyó el README — los hashes son literales del yml — así que mantener los dos lugares de
+      # acuerdo dependía de que alguien se acordara. Cuando se desincronizaron, el rojo no dijo "el
+      # README quedó viejo", dijo "los bytes desplegados no coinciden", que manda a mirar la cadena.
+      #
+      # Deliberadamente sólo verifica PRESENCIA del hash en el archivo, no la fila ni el formato: atar
+      # esto a una tabla de Markdown lo rompe el día que alguien reordena una columna, y ese rojo no
+      # enseñaría nada. Lo que no puede pasar es que el README publique un hash y el CI clave otro.
+      - name: README.md agrees with the pinned hashes
+        run: |
+          set -euo pipefail
+          fail=0
+          for pair in "EXPECTED_ARTIFACT_SHA256:$EXPECTED_ARTIFACT_SHA256" "EXPECTED_VERIFY_HASH:$EXPECTED_VERIFY_HASH"; do
+            name="${pair%%:*}"; want="${pair#*:}"
+            if grep -qF "$want" README.md; then
+              echo "ok   $name is published in README.md"
+            else
+              echo "FAIL $name is pinned here but NOT in README.md"
+              echo "     pinned: $want"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || { echo ""; echo "Fix README.md, or fix the pin. They describe the same chain."; exit 1; }
 
       - name: Deployed bytes match the hashes published in README.md
         run: |
