@@ -3,7 +3,16 @@
 #
 # ── LAS TRES COSAS QUE ESTE SCRIPT SABE Y QUE CUESTAN UNA NOCHE AVERIGUAR ───────────────────
 #
-# 1) MINIFICAR EL IDL ANTES DE SUBIRLO. Es la diferencia entre que funcione y que no.
+# 0) POR QUE FALLA: el plan son 6 transacciones — la #1 asigna la cuenta y las #2..#6 escriben
+#    el contenido en 5 trozos (medido con `--export`). En la cadena NO hay ni una transaccion
+#    fallida de la authority, y el buffer igual queda parcial: alguna escritura se DESCARTA y una
+#    transaccion descartada no deja rastro. Por eso la estrategia es RELLENAR con `update-buffer`
+#    sobre el buffer que ya existe, y no tirarlo y volver a empezar.
+#
+# 1) MINIFICAR AYUDA PERO NO ALCANZA, y conviene no confundirlo con la causa: el archivo de
+#    `anchor build` son 37530 bytes crudos / 5532 comprimidos, minificado 16020 / 4886. Con el
+#    indentado el buffer quedaba en 5776 bytes; minificado, en 4982. Los dos truncados. Se
+#    minifica igual porque menos trozos es menos loteria, no porque lo resuelva.
 #    `anchor build` escribe `target/idl/escrow.json` INDENTADO: 37530 bytes crudos, 5532
 #    comprimidos. El mismo IDL minificado son 16020 crudos y 4883 comprimidos. El IDL que SÍ se
 #    publicó con éxito (canónico d295b7c7) medía 15862 / 4894 — o sea del tamaño del minificado.
@@ -121,13 +130,27 @@ for i in $(seq 1 "$MAX_TRIES"); do
   [ -z "$buf" ] && { say "  no se creó el buffer; reintento"; sleep 5; continue; }
   say "  buffer: $buf"
 
-  verificar_onchain "$buf" "$HASH"; rc=$?
-  if [ "$rc" -eq 0 ]; then
-    say "  buffer COMPLETO y con el hash esperado ✅"
-  elif [ "$rc" -eq 2 ]; then
-    say "  no pudimos leer la cadena — NO lo cierro, puede estar bien; reintento"; sleep 8; continue
-  else
-    say "  buffer truncado o distinto ❌ — lo cierro y reintento"
+  # ── RELLENAR, no descartar ──────────────────────────────────────────────────────────────
+  # El plan que la herramienta exporta son 6 transacciones: la #1 asigna la cuenta y las #2..#6
+  # escriben el contenido en 5 trozos. Medido: en la cadena NO hay ni una transaccion fallida de
+  # la authority, y el buffer igual queda parcial. Eso no es rechazo, es DESCARTE: alguna de las
+  # 5 escrituras nunca aterriza, y una transaccion descartada no deja rastro.
+  #
+  # Tirar el buffer y empezar de cero repite la loteria completa. `update-buffer` reescribe el
+  # contenido sobre el buffer que ya existe, asi que cada pasada tiene que acercarse.
+  completo=0
+  for intento_relleno in 1 2 3 4 5; do
+    verificar_onchain "$buf" "$HASH"; rc=$?
+    if [ "$rc" -eq 0 ]; then completo=1; say "  buffer COMPLETO y con el hash esperado ✅"; break; fi
+    if [ "$rc" -eq 2 ]; then
+      say "  no pudimos leer la cadena (pasada $intento_relleno) — reintento la lectura"; sleep 8; continue
+    fi
+    say "  incompleto (pasada $intento_relleno) — rellenando con update-buffer"
+    "${PM[@]}" --priority-fees "$PRIORITY_FEES" update-buffer "$buf" "$MIN" >/dev/null 2>&1 || true
+    sleep 4
+  done
+  if [ "$completo" -ne 1 ]; then
+    say "  no se pudo completar este buffer — lo cierro y arranco otro"
     "${PM[@]}" close-buffer "$buf" >/dev/null 2>&1 || true; sleep 5; continue
   fi
 
