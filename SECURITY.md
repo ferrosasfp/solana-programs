@@ -113,17 +113,25 @@ public and none of it is a secret we are keeping.
   (`4wPhH4dCndAEbdKJS3TC3JF6eeNfC4JrVej4DoYd54jH`). Whoever holds it can replace
   every guarantee the program makes. It has not been revoked and we are not
   claiming immutability.
-- **The source and the chain DIVERGE right now, on purpose.** This tree contains a
-  change to `programs/escrow/src/lib.rs` (WKH-343: `deposit` now requires the
-  beneficiary's associated token account for the escrow's mint) that **has not been
-  deployed**. The bytes running on devnet are still the ones deployed on 2026-08-05
-  in slot `481495859`, whose hashes the README publishes. The deploy is a separate,
-  later step with its own gate, and until it happens a rebuild of this tree will
-  **not** reproduce the deployed binary. Independently of that, the upgrade
-  authority above can replace the program at any moment. So a finding against
-  `main` is not automatically a finding against the deployed bytes: say which one
-  you tested, and if you are not sure, say that instead of guessing.
-  `scripts/onchain-hash.py` tells you what is actually running.
+- **WKH-343 IS deployed. This bullet used to say the opposite and was wrong.**
+  Until 2026-08-12 it read "has not been deployed. The bytes running on devnet are
+  still the ones deployed on 2026-08-05 in slot `481495859`". That was false, and it
+  misdirected exactly the reader this file is for: someone reporting a finding about
+  `deposit` was being told the deployed program did not have the account it now
+  requires. Nobody edited the sentence — the chain moved under it.
+
+  What the chain says, read on 2026-08-12 from the ProgramData account of
+  `DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x`: **last deploy in slot
+  `482775110`** (the WKH-343 one, 2026-08-10), and the upgrade authority is present
+  and not revoked. `README.md` already said this in its "Source vs deployed" row;
+  the two files disagreed, and this was the one that was wrong.
+
+  What still holds, and is the part worth reading: **the upgrade authority above can
+  replace the program at any moment**, so a finding against `main` is still not
+  automatically a finding against the bytes that are running. Say which one you
+  tested, and if you are not sure, say that instead of guessing.
+  `scripts/onchain-hash.py` tells you what is actually running, and it takes no
+  keypair and no toolchain of ours — do not take this file's word for it.
 - **Behaviour driven tests, no fuzzing**, no formal verification, no symbolic
   execution. The current count is the one in the README's "Last measured run" row.
   If your tool found something ours did not, that is expected.
