@@ -409,11 +409,11 @@ pub mod escrow {
 // corre exactamente 33 ciclos y antes de este cambio moría con EscrowIndexFull / 6005).
 //
 // QUÉ SIGUE EN PIE, y es refutable con un input concreto:
-// 1. Si el sender nunca llama `close`, el cupo no se libera: `close` es opt-in y hoy ningún
-//    consumidor la construye. 32 escrows registrados y jamás cerrados siguen dando 6005 en el 33º.
-// 2. Si el sender llama `close` SIN pasar el índice (`escrowIndex: null`), la entrada queda
-//    colgada igual que antes. Omitir la cuenta no es un error: es el camino de quien nunca
-//    registró nada.
+// 1. Si el sender nunca llama `close`, el cupo no se libera: `close` es opt-in. 32 escrows
+//    registrados y jamás cerrados siguen dando 6005 en el 33º. Sigue vigente; ver la nota de abajo.
+// 2. Si el sender llama `close` SIN pasar el índice (`escrowIndex: null`), la entrada queda colgada
+//    igual que antes. Omitir la cuenta no es un error: es el camino de quien nunca registró nada.
+// CORREGIDO 2026-08-11: decía "ningún consumidor la construye". chaski-v3 SÍ la arma; 6 en cadena.
 // 3. Para las entradas cuyo `EscrowState` ya se cerró antes de este cambio, `close` no sirve
 //    (ya no existe la cuenta que cierra), y `deregister_escrow` sigue siendo la única salida.
 /// Máximo de escrows ABIERTOS indexables por sender. El índice solo lista escrows en estado
@@ -543,10 +543,10 @@ pub struct Deposit<'info> {
     // deploy.
     // POR QUE SE CORRIGIO EL `///` Y NO SE PARQUEO EN UN `//`, que es la practica de este archivo:
     // porque WKH-343 mueve el sha256 canonico del IDL POR CONSTRUCCION (agrega `beneficiary_ata`),
-    // asi que la ventana esta abierta y corregir cuesta un rebuild. El IDL nuevo NO se publico
-    // todavia: las dos mitades del gate de W6 siguen sin cumplirse (runbook-deploy.md:21-24). Si se
-    // publicara con la frase falsa adentro, quedaria inmortalizada en cadena y corregirla pasaria a
-    // costar un upgrade de IDL. El costo es asimetrico y por eso se corrige ahora.
+    // asi que la ventana estaba abierta y corregir costaba un rebuild. ACTUALIZADO 2026-08-11: esa
+    // ventana YA SE CERRO, y este parrafo decia lo contrario. El IDL nuevo ESTA publicado y el gate
+    // de W6 se cumplio: la cuenta de metadata sirve `beneficiary_ata` en el indice 8 de `deposit`.
+    // CONSECUENCIA: de aca en adelante corregir un `///` cuesta un upgrade de IDL, no un rebuild.
     /// Acepta CUALQUIER mint, y es una decisión, no un olvido. El programa es infraestructura de
     /// escrow genérica; "qué token vale un dólar" es política de producto y vive aguas arriba, en
     /// el componente que arma el depósito. Clavarlo acá obligaría a dos builds, dos IDL, dos hashes
