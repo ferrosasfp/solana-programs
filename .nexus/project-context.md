@@ -126,17 +126,38 @@ porque un número de línea se desplaza cuando alguien edita tres líneas más a
 | `chaski-v3` | arma **sólo** `deposit` (partial-signed por la wallet) | `src/infrastructure/solana-wallet.ts:410-417` |
 | `wasiai-facilitator` | firma `release` y lee `EscrowState` | `src/chains/solana-escrow.ts` |
 
-Los dos vendorean el IDL y **pinnean su sha256 canónico**, desde el re-pin del 2026-08-05
-(`chaski-v3` `bd85dfa`, `wasiai-facilitator` `f9bddce`)
-`bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, que es el mismo que devuelve
-`anchor idl fetch` (el anterior era `fb64c937…`). ⚠️ **Y ya NO es el que construye este árbol**: la
-rama de WKH-343 le agrega una cuenta a `deposit`, así que el hash del árbol se movió y vive en un solo
-lugar, `doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md`. Mientras eso no se
-despliegue, los tests de hash de los dos consumidores están rojos **a propósito**:
+Los dos vendorean el IDL y **pinnean su sha256 canónico**. Al 2026-08-11 el valor es
+`cc2761266dcf8335a17562129de040805f37f69cfe654f5be472045ba7bfcd51`, y los cuatro lados coinciden:
 
-- `chaski-v3/contracts/idl/escrow-idl.hash.test.ts:22` + `chaski-v3/contracts/CONTRACT-VERSIONS.md`
-  (hay un test que exige que el doc publique exactamente la constante, `:107-142`)
-- `wasiai-facilitator/src/chains/escrow-idl.hash.test.ts:30`
+| Dónde | Cómo se midió |
+|---|---|
+| la cadena | `getAccountInfo` de la cuenta de metadata, zlib inflado desde el offset 96 (16 020 bytes) |
+| este árbol | `target/idl/escrow.json` canonicalizado |
+| `chaski-v3` | pin activo en `contracts/idl/escrow-idl.hash.test.ts:50`, y el doc en `contracts/CONTRACT-VERSIONS.md:95` |
+| `wasiai-facilitator` | pin activo en `src/chains/escrow-idl.hash.test.ts:53` |
+
+⚠️ **Dos trampas de este párrafo, y las dos ya nos costaron una ronda:**
+
+1. **Los hashes viejos siguen escritos en esos mismos archivos, como comentarios `Anterior:`.** En
+   `chaski-v3` el `bfbdfe5a…` vive en la línea 27 y el activo es la 50; en el facilitator el
+   `bfbdfe5a…` está en el comentario justo arriba del activo. Un `grep` de 64 hexadecimales sobre
+   esos archivos devuelve el histórico primero y **hace parecer que el consumidor está desalineado
+   cuando no lo está**. La constante activa es la única que manda: buscá `ESCROW_IDL_SHA256 =`.
+2. **La cadena envejece sola.** Este número se vuelve falso sin que nadie edite este archivo, con
+   sólo republicar el IDL. El instrumento para re-verificarlo sin creerle a ningún archivo es leer
+   la cuenta on-chain y canonicalizar con el algoritmo de
+   `chaski-v3/contracts/idl/canonical-hash.ts` (claves ordenadas recursivamente + sha256 sobre
+   UTF-8). Correr ese control **antes** de citar el valor de acá.
+
+Historial del hash, para poder auditar el movimiento: `aa53c03f…` → `4bcc34a9…` → `fb64c937…` →
+`bfbdfe5a…` → `cc276126…` (el de hoy). El `d295b7c7…` que declara
+`doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md` es el hash **de esa rama**
+al 2026-08-10, correcto como registro histórico y **ya no vigente**: `main` avanzó 13 commits
+encima y el IDL se republicó.
+
+Los dos tests de hash están **verdes**, medido el 2026-08-11: `chaski-v3` 8/8, `wasiai-facilitator`
+5/5. Si alguna vez los ves rojos, no asumas que es "a propósito por un deploy pendiente" — ese
+estado existió mientras WKH-343 estaba en vuelo y **ya no**.
 
 El IDL también está publicado on-chain en la cuenta de metadata canónica
 `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`.
