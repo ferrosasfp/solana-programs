@@ -468,7 +468,20 @@ def exit_reasons(
 
 
 def exit_code(reasons: list, flag: bool) -> int:
-    """0 unless the flag was given and there is at least one reason not to pass."""
+    """0 unless the flag was given and there is at least one reason not to pass.
+
+    That an aborted run ALSO exits non-zero is stated once, in the module docstring
+    ("A non-zero status is NOT self-describing"). Not repeated here on purpose: two
+    copies of the same rule drift.
+
+    ⚠️ ONE THING THAT IS NOT WRITTEN ANYWHERE ELSE, added 2026-08-12. Do not "harmonise"
+    this with the exit 2 that `wasiai-facilitator/.github/workflows/idl-onchain-drift.yml`
+    uses for "could not ask". That control is a MONITOR and its own header argues that a
+    job going red on a devnet hiccup trains people to ignore it. This script is a DEPLOY
+    GATE (runbook-deploy.md runs it before W6), so the opposite answer is the correct one:
+    a gate that cannot see must block. Making it pass when the RPC is unavailable would
+    open it exactly when nobody can check anything.
+    """
     if not flag:
         return 0
     return 1 if reasons else 0
