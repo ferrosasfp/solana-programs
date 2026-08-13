@@ -1,27 +1,33 @@
 # WKH-343 — runbook del upgrade a devnet
 
-> ⛔ **ESTE DOCUMENTO SE ESCRIBIÓ. NO SE EJECUTÓ.** Ningún paso de la sección 4 se corrió. No se
-> desplegó nada, no se firmó nada, no se movió un solo token. El estado real al cierre de esta HU es:
-> **W0..W5 hechas, W6 planificada y NO ejecutada.**
+> ✅ **W6 SE EJECUTÓ.** El upgrade está en devnet desde el **slot `482775110`** (2026-08-10), y el
+> gate de §1 quedó satisfecho **antes**, por el camino A. Este encabezado decía lo contrario
+> ("W0..W5 hechas, W6 planificada y NO ejecutada") y **era falso desde el día siguiente a escribirlo**.
 >
-> Eso **no es una entrega incompleta**: es el orden que evita cortar los depósitos. Correr el upgrade
-> antes de que su gate esté satisfecho tiene un resultado medible y conocido — **ningún depósito
-> entra** — así que el upgrade espera, y el que decide cuándo es el founder.
+> ⚠️ **Por qué se dejó mentir dos días, que es la lección de este archivo:** un runbook describe un
+> estado del mundo, y el mundo cambia sin que nadie edite el archivo. Nada en el repo se rompe cuando
+> este encabezado envejece: ningún test lo lee, ningún CI lo compara contra la cadena. Al 2026-08-12
+> **se presentaron al founder cuatro decisiones como abiertas apoyándose en este párrafo**, cuando el
+> deploy que esas decisiones gobernaban ya había ocurrido. La regla que sale de ahí es la misma que
+> este documento ya predicaba en CD-22 y que su propio encabezado no cumplía: **antes de citar este
+> archivo, corré el script.**
 
-Fecha del documento: 2026-08-10. Árbol: `feat/004-wkh-343-deposito-destinatario-sin-cuenta-token`,
-sobre `main` @ `8fca47294f6cd8e7ecefd330e278e63078957e26`.
+Fecha del documento: 2026-08-10 (encabezado y §1 corregidos el **2026-08-13** contra la cadena).
+Árbol: `feat/004-wkh-343-deposito-destinatario-sin-cuenta-token`, sobre `main` @
+`8fca47294f6cd8e7ecefd330e278e63078957e26`.
 
 ---
 
-## 1. El GATE. Sin las dos mitades, esto no se corre
+## 1. El GATE. **Ya está satisfecho** — así quedó, y cómo se re-verifica
 
-> **W6 no corre hasta que (i) `chaski-v3` mande `beneficiary_ata` en su `deposit`, y (ii) el
-> beneficiario en uso tenga una ATA para el mint en uso.**
+> **W6 no corría hasta que (i) `chaski-v3` mandara `beneficiary_ata` en su `deposit`, y (ii) el
+> beneficiario en uso tuviera una ATA para el mint en uso. Las dos se cumplieron, en ese orden, y
+> después corrió W6.**
 
 | Mitad | Por qué | Estado medido | Cómo se verifica |
 |---|---|---|---|
-| **(i)** El cliente manda la cuenta | Si no la manda, el programa nuevo lee **otra cosa** como `beneficiary_ata` y **todo depósito falla** (ver §3) | ⛔ **NO satisfecha.** `chaski-v3` arma el depósito con 5 cuentas nombradas y no manda `beneficiary_ata` | `simulateTransaction` con `sigVerify: false` contra devnet, **más** un depósito real de `chaski-v3` **antes** del deploy |
-| **(ii)** El beneficiario tiene la ATA **canónica** | Si no la tiene, el programa nuevo **rechaza el 100% de los depósitos** | ⛔ **NO satisfecha.** Medido al slot `482608313`: la ATA canónica del beneficiario `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` para el mint de Circle `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` es `Cq9AinM9WCry8Pyk5EsFJ2hdQomKAUES7Cq7YLunRGMC` y **no existe** | `python3 scripts/list-live-escrows.py --url devnet` ⇒ tiene que imprimir `beneficiary can receive: yes` |
+| **(i)** El cliente manda la cuenta | Si no la manda, el programa nuevo lee **otra cosa** como `beneficiary_ata` y **todo depósito falla** (ver §3) | ✅ **Satisfecha.** `chaski-v3` la manda como 9ª cuenta (`src/infrastructure/solana-wallet.ts`, commit `f643a64`), y lo que cerró el arreglo fue **el IDL**, no la llamada `.accounts()`. Confirmado por depósitos reales contra el binario desplegado: 3 el 11-ago (5, 12 y 15 USDC) y el escrow `HG6CNbSV…` de 7 USDC | `simulateTransaction` con `sigVerify: false` contra devnet, **más** un depósito real de `chaski-v3` |
+| **(ii)** El beneficiario tiene la ATA **canónica** | Si no la tiene, el programa nuevo **rechaza el 100% de los depósitos** | ✅ **Satisfecha.** Re-medido el **2026-08-13 al slot `483547321`**: la ATA canónica de `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` para el mint de Circle `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` es `Cq9AinM9WCry8Pyk5EsFJ2hdQomKAUES7Cq7YLunRGMC`, **existe**, está `initialized` y tiene saldo. Esta celda decía **"no existe"** al slot `482608313` y quedó vieja sola | `python3 scripts/list-live-escrows.py --url devnet` ⇒ tiene que imprimir `beneficiary can receive: yes` |
 
 ⚠️ **La palabra "canónica" de la fila (ii) no es un adorno, y el instrumento no la preguntaba.** Hasta
 el fix pack de esta HU el script preguntaba `getTokenAccountsByOwner(beneficiary, {mint})`, que filtra
@@ -50,29 +56,38 @@ de este documento no alcanza y con el tiempo es peor que no citar nada: el estad
 que nadie edite este archivo (medido: 4 filas cambiaron de estado entre los slots `482578481` y
 `482583139`, dentro de una misma sesión). **Corré el script.**
 
-### 1.1 Las dos salidas posibles, y este documento NO elige
+### 1.1 Las dos salidas posibles — **se tomó el camino A**
 
-- **Camino A** — se abre primero la HU de `chaski-v3`; cuando aterriza, W6 corre. **Sin ventana de
-  falla**, porque la cuenta va al final y el orden cliente-primero es seguro (§3).
-- **Camino B** — el founder acepta **explícitamente** una interrupción de depósitos y W6 corre antes.
-
-⛔ **Ni este documento ni quien implementó la HU eligen B.** Es decisión del founder.
+- **Camino A** ✅ **el que se recorrió** — se abrió primero la HU de `chaski-v3`; cuando aterrizó,
+  corrió W6. **Sin ventana de falla**, porque la cuenta va al final y el orden cliente-primero es
+  seguro (§3). El cliente aterrizó en `f643a64` y W6 desplegó al slot `482775110`.
+- **Camino B** — el founder aceptaba **explícitamente** una interrupción de depósitos y W6 corría
+  antes. **No se usó.**
 
 ---
 
-## 2. Las 4 decisiones del founder que están ABIERTAS y que W6 necesita
+## 2. Las 4 decisiones del founder — **todas resueltas**
 
-Ninguna se puede derivar del repo. Van como preguntas, no como supuestos.
+Ninguna se podía derivar del repo, así que iban como preguntas. Están respondidas y se dejan escritas
+con su respuesta, no borradas: quien lea este runbook mañana necesita saber **qué se eligió**, no sólo
+que ya no hay nada que preguntar.
 
-1. **¿Cuál es el mint pretendido en devnet?** El de Circle (`4zMMC9srt…`) o el nuestro
-   (`8yRX3fZ2…`). No es cosmético: decide **quién** tiene que provisionar la ATA del beneficiario, y
-   decide a qué **freeze authority** se expone la custodia. El de Circle tiene una freeze authority
-   que **no es nuestra** (`CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT`, medido al slot `482578725`).
-2. **¿Quién provisiona la ATA del beneficiario?** Crearla es **una** transacción, la paga cualquiera,
-   y no requiere la firma del beneficiario. Pero *que alguien la corra* es una acción operativa que
-   hoy no tiene dueño asignado. Es la mitad (ii) del gate.
-3. **¿Camino A o camino B?** (§1.1).
-4. **¿Cuál es el path del keypair de la upgrade authority?** La authority es
+1. **¿Cuál es el mint pretendido en devnet?** ✅ **RESPUESTA DEL FOUNDER: el de Circle**
+   (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`). No era cosmético: decidía **quién** provisiona la
+   ATA del beneficiario, y a qué **freeze authority** se expone la custodia. **Esa exposición se
+   aceptó a conciencia**: el mint de Circle tiene una freeze authority que **no es nuestra**
+   (`CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT`, medido al slot `482578725`), y sigue sin serlo.
+   El nuestro (`8yRX3fZ2…`) queda como el mint de los escrows viejos, que conviven.
+2. **¿Quién provisiona la ATA del beneficiario?** ✅ **Resuelta de hecho**: la ATA canónica
+   `Cq9AinM9…` existe y está `initialized` (re-medido al slot `483547321`, fila (ii) del gate). Crearla
+   es **una** transacción, la paga cualquiera, y no requiere la firma del beneficiario. ⚠️ Lo que
+   **sigue sin dueño asignado** es el caso general: **si mañana cambia el beneficiario o el mint, nadie
+   tiene el mandato de correr esa transacción**, y el síntoma sería otra vez "rechaza el 100% de los
+   depósitos". Que hoy exista no es un proceso, es un hecho puntual.
+3. **¿Camino A o camino B?** ✅ **Camino A** (§1.1). Se disolvió sola: el cliente aterrizó primero.
+4. **¿Cuál es el path del keypair de la upgrade authority?** ✅ **Resuelta de hecho** — el founder la
+   proveyó y W6 se firmó con ella. Se deja el análisis original porque describe **dónde NO está**, que
+   sigue siendo cierto y sigue siendo lo correcto. La authority es
    `4wPhH4dCndAEbdKJS3TC3JF6eeNfC4JrVej4DoYd54jH`, leída de la cadena. El keypair **no está en el
    repo, y eso es correcto**: las 4 menciones que hay son placeholders (`README.md` en la sección de
    deploy, `scripts/deploy-devnet.sh`, `doc/publish-idl-onchain.md`) y `~/.config/solana/id.json`
@@ -83,7 +98,7 @@ Ninguna se puede derivar del repo. Van como preguntas, no como supuestos.
 
 ---
 
-## 3. ⚠️ R11 — el riesgo más silencioso de esta HU. **NO VERIFICADO**
+## 3. R11 — el riesgo más silencioso de esta HU. ✅ **VERIFICADO** (§3.3, 2026-08-13)
 
 Medido **leyendo** `chaski-v3/src/infrastructure/solana-wallet.ts` (sólo lectura, CD-7): el cliente
 real arma el depósito con `.accounts({sender, mint, escrowState, vault, senderAta})` **y**
@@ -109,22 +124,40 @@ El cliente **viejo** contra el programa **nuevo** emite `[…8…, reference]`. 
 perder una tarde revisando ATAs de beneficiarios que están perfectas. Está escrito también en el
 comentario de la cuenta, en `programs/escrow/src/lib.rs`, para que se lea desde el código.
 
-### 3.3 ⛔ `reference` se corre del índice 8 al 9 — **VERIFICACIÓN OBLIGATORIA DEL HANDOFF, NO VERIFICADA**
+### 3.3 `reference` se corre del índice 8 al 9 — ✅ **VERIFICADO el 2026-08-13, y no rompe nada**
 
-**NO está verificado** si algo del lado de `chaski-v3`, de `wasiai-facilitator` o de un explorador lee
-ese `reference` **por posición fija** en vez de por barrido de `accountKeys`.
+La pregunta era si algo del lado de `chaski-v3` o de `wasiai-facilitator` lee ese `reference` **por
+posición fija** en vez de por barrido de `accountKeys`. Si alguien lo leyera posicionalmente, el
+arreglo le rompería el camino de pago **en silencio**: no hay error ni excepción, lee el pubkey
+equivocado.
 
-**Si alguien lo lee posicionalmente, el arreglo le rompe el camino de pago en silencio.** No hay error,
-no hay excepción: lee el pubkey equivocado.
+**Medido por lectura de los dos repos (sólo lectura, CD-7):**
 
-- **Quién lo verifica:** la HU de `chaski-v3`, antes de que W6 corra.
-- **Cómo:** buscar en ese repo todo acceso indexado a `accountKeys`/`message.accountKeys` en el camino
-  del depósito y confirmar que la referencia se ubica por comparación de pubkey, no por índice.
-- ⛔ **No se asume resuelto y no se entra a `chaski-v3` a arreglarlo desde esta HU** (CD-7).
+| Repo | Accesos indexados a `accountKeys` | Accesos indexados a las cuentas del `deposit` | Veredicto |
+|---|---|---|---|
+| `chaski-v3` | **cero** en `src/` y `app/` fuera de tests | ninguno | no afectado |
+| `wasiai-facilitator` | sólo en **comentarios** (`src/methods/solana-sponsor/cr1.ts:367,428`) | sí, pero **únicamente los índices 0 y 1** — `sponsor-claims.ts:111-112` lee `SENDER` y `MINT` vía `DEPOSIT_ACCOUNT_INDEX` (`deposit-shape.ts:57-66`) | no afectado |
+
+**Por qué el corrimiento no lo toca:** `beneficiary_ata` entra en el índice **8**, o sea después de las
+ocho posiciones declaradas (`SENDER:0 … SYSTEM_PROGRAM:7`). Los dos índices que el facilitator lee de
+verdad son 0 y 1, y no se mueven. `reference` no se lee posicionalmente en ningún lado.
+
+⚠️ **El detalle que sí podría haber roto todo, y no rompió por un carácter:** `cr1.ts:220` valida la
+cantidad de cuentas del `deposit` con `keys.length < DEPOSIT_POSITIONAL_ACCOUNTS` — un **piso**, así que
+una cuenta de más pasa. La validación hermana de `register_escrow` (`cr1.ts:348`) usa `!==`, que es
+**exacto**. Si el `deposit` hubiera usado `!==`, este arreglo habría hecho que el facilitator rechazara
+el 100% de los depósitos, y el síntoma habría aparecido del lado del patrocinio, no del programa.
+`register_escrow` no lleva `beneficiary_ata`, por eso su chequeo exacto sigue siendo correcto.
 
 ---
 
-## 4. Los pasos. **NINGUNO SE CORRIÓ**
+## 4. Los pasos. **SE CORRIERON el 2026-08-10** (slot `482775110`)
+
+> Este encabezado decía **"NINGUNO SE CORRIÓ"**, que fue cierto durante menos de 24 horas. Se deja el
+> texto de cada paso **tal cual se escribió, en modo instructivo**, porque su valor es ser el
+> procedimiento reejecutable para el próximo upgrade, no un parte de situación. Lo que sí cambia es
+> esto: **no lo leas como "falta hacer esto".** Ya se hizo. Si vas a correrlo de nuevo, el gate de §1
+> se vuelve a evaluar desde cero — con el script, no con este archivo (CD-22).
 
 ### 4.0 Preflight de capacidad — **este sí se corrió, y es de sólo lectura**
 
