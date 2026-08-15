@@ -1,15 +1,45 @@
 # WKH-343 — el sha256 canónico del IDL nuevo, y por qué vive sólo acá
 
+> # ⛔ ESTE ARCHIVO ES UN REGISTRO HISTÓRICO DE LA HU. NINGÚN VALOR DE ACÁ ES EL VIGENTE.
+>
+> **Corregido el 2026-08-15.** Hasta esa fecha este archivo declaraba `d295b7c7…` como "el valor
+> vigente para este árbol" y además prohibía copiarlo al README (CD-4). Las dos cosas son falsas hoy,
+> y la contradicción era visible desde otro documento del propio repo
+> (`.nexus/project-context.md`, que ya decía que `d295b7c7…` era histórico).
+>
+> **El valor vigente, medido el 2026-08-15 en los cuatro artefactos por separado:**
+> `cc2761266dcf8335a17562129de040805f37f69cfe654f5be472045ba7bfcd51` sobre **16.020 bytes**.
+>
+> | Artefacto | Cómo se midió |
+> |---|---|
+> | este árbol | `target/idl/escrow.json` canonicalizado (claves ordenadas, separadores compactos, UTF-8 sin escapar) |
+> | la cadena | `getAccountInfo` de `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`, zlib inflado desde el offset 96 |
+> | `wasiai-facilitator` | `ESCROW_IDL_SHA256` en `src/chains/escrow-idl.hash.test.ts:53` |
+> | `chaski-v3` | copia vendorizada `src/infrastructure/solana/escrow-idl.ts`, canonicalizada con el mismo algoritmo |
+>
+> **Qué pasa con CD-4.** La regla ("este archivo es el único lugar del repo donde va este valor, no se
+> copia al README") era correcta **mientras el IDL no estaba publicado**: lo que protegía era no
+> difundir un hash de una rama en vuelo. El IDL se publicó en cadena el 2026-08-11 y los dos
+> consumidores lo pinnearon, así que el valor dejó de ser un borrador interno y pasó a ser el valor
+> canónico publicado; el README lo lleva a propósito, y el `d295b7c7…` de más abajo **no lo pinnea
+> nadie** (barrido del repo el 2026-08-15: aparece sólo en documentos históricos y en el README, ahí
+> declarado explícitamente como valor anterior). CD-4 se da por **superada**, no por incumplida.
+>
+> Todo lo que sigue se conserva sin tocar porque es el registro de cómo se movió el hash durante la
+> HU. Leelo como historia; para el valor de hoy, la tabla de arriba.
+>
+> ---
+>
 > Medido el 2026-08-10 sobre el árbol base `8fca47294f6cd8e7ecefd330e278e63078957e26` con el cambio de
 > W2 aplicado. `lib.rs` md5 `4904ecc950795662d8c4e7cca262247c`, `target/idl/escrow.json` md5
 > `26b2685ce861b04e22322b6d52430836`.
 >
 > **⚠️ EL HASH SE MOVIÓ OTRA VEZ EN LA SEGUNDA RONDA DEL FIX PACK, y el valor de más abajo es el
-> viejo.** El valor vigente para este árbol es:
+> viejo.** El valor vigente **al 2026-08-10, en esa rama**, era:
 >
 > | | |
 > |---|---|
-> | sha256 canónico del IDL **de este árbol** | `d295b7c74ff9a2ac758e24cc9e7d32d3c09d5943e1b137ef67f4f2692993c70e` |
+> | sha256 canónico del IDL **de esa rama, al 2026-08-10** (histórico, ya no vigente) | `d295b7c74ff9a2ac758e24cc9e7d32d3c09d5943e1b137ef67f4f2692993c70e` |
 > | `target/idl/escrow.json` md5 | `25b498214df3f6f87a936b3e536b290b` |
 > | `target/deploy/escrow.so` md5 | `1588018c0cc754db49462f93054455c9` (276 800 bytes, sin cambio de tamaño) |
 > | `programs/escrow/src/lib.rs` md5 | `15c8d5ecea1babd3f029b8bcce0798ed` |
@@ -40,7 +70,8 @@
 > (`26b2685c…`, byte por byte idéntico): `//` no llega al IDL, `///` y `//!` sí. Esa asimetría es
 > justamente lo que hace que la corrección de esta ronda cueste un rebuild.
 >
-> ⛔ **Este archivo es el ÚNICO lugar del repo donde va este valor** (CD-4). No se copia al README, ni a
+> ⛔ **Este archivo es el ÚNICO lugar del repo donde va este valor** (CD-4) — regla de la HU en vuelo,
+> **superada** el 2026-08-11 cuando el IDL se publicó en cadena; ver la cabecera. No se copia al README, ni a
 > `doc/publish-idl-onchain.md`, ni se re-pinnea en ningún consumidor. El re-pin de un consumidor es una
 > decisión de ese repo, con su propio SDD, y **no se hace desde acá** (CD-7).
 
@@ -185,9 +216,21 @@ repo** la deriva sola, y ese cliente usa `.accountsPartial(...)` de `@coral-xyz/
 
 ## 5. Lo que este archivo NO autoriza
 
+⚠️ **Las tres viñetas de abajo eran ciertas mientras la HU estaba en vuelo y hoy las tres son
+falsas.** No las borro porque son el registro de qué autorizaba este documento en su momento; las
+anoto para que nadie las lea como estado. Medido el 2026-08-15:
+
 - ⛔ No re-pinnea nada. `bfbdfe5a…` sigue siendo el valor pinneado en los dos consumidores, y seguirá
   siéndolo hasta que cada repo lo cambie con su propio SDD.
+  → **Ya no.** Los dos pinnean `cc276126…`: `wasiai-facilitator/src/chains/escrow-idl.hash.test.ts:53`
+  y `chaski-v3/contracts/idl/escrow-idl.hash.test.ts:50`. Cada repo lo cambió por su lado, que es
+  exactamente lo que esta viñeta pedía.
 - ⛔ No declara que el IDL nuevo esté publicado en cadena. **No lo está**: el deploy es W6 y **no se
   ejecutó**. La cuenta del IDL on-chain sigue sirviendo el IDL del binario vigente.
+  → **Está publicado.** La cuenta `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`, inflada desde el
+  offset 96, canonicaliza a `cc276126…` sobre 16.020 bytes.
 - ⛔ No dice que el binario desplegado tenga esta cuenta. El árbol **diverge a propósito** de la cadena
   entre W2 y el deploy.
+  → **El árbol ya no diverge.** El deploy corrió el 2026-08-10 en el slot `482775110`, y
+  `scripts/onchain-hash.py` devuelve el mismo `verify-hash` que produce `target/deploy/escrow.so` de
+  este árbol con los ceros finales recortados (`2bd31779…`).

@@ -25,7 +25,14 @@ reusar los números.
 | 001 | HU-SOL-?? | (histórica, carpeta ausente del árbol) | — | — |
 | 002 | HU-SOL-20 | escrow remittance-id recovery (`EscrowIndex`, `register_escrow`, `deregister_escrow`) | HECHO (desplegado 2026-08-01) | carpeta ausente del árbol; referenciada desde `chaski-v3/contracts/idl/escrow-idl.hash.test.ts:19-21` |
 | 003 | WKH-326 | El tope de 32 del índice de escrows deja de crecer para siempre | DONE y DESPLEGADO en devnet el 2026-08-05, slot `481495859` | [`work-item.md`](003-wkh-326-cap-del-indice-liberado-en-close/work-item.md) · [`sdd.md`](003-wkh-326-cap-del-indice-liberado-en-close/sdd.md) · [`story-HU-326.md`](003-wkh-326-cap-del-indice-liberado-en-close/story-HU-326.md) · [`ar-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/ar-report.md) · [`cr-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/cr-report.md) · [`qa-report.md`](003-wkh-326-cap-del-indice-liberado-en-close/qa-report.md) · [`auto-blindaje.md`](003-wkh-326-cap-del-indice-liberado-en-close/auto-blindaje.md) · [`idl-hash.md`](003-wkh-326-cap-del-indice-liberado-en-close/idl-hash.md) · [`report.md`](003-wkh-326-cap-del-indice-liberado-en-close/report.md) |
-| **004** | **WKH-343** | **El depósito acepta un destinatario que no puede recibir el token, y el repo habla de la cadena en presente** | **in progress (F1 hecho, esperando `HU_APPROVED`)** | [`work-item.md`](004-wkh-343-deposito-destinatario-sin-cuenta-token/work-item.md) |
+| **004** | **WKH-343** | **El depósito acepta un destinatario que no puede recibir el token, y el repo habla de la cadena en presente** | **IMPLEMENTADA Y DESPLEGADA** en devnet el 2026-08-10, slot `482775110` | [`work-item.md`](004-wkh-343-deposito-destinatario-sin-cuenta-token/work-item.md) · [`sdd.md`](004-wkh-343-deposito-destinatario-sin-cuenta-token/sdd.md) · [`story-HU-343.md`](004-wkh-343-deposito-destinatario-sin-cuenta-token/story-HU-343.md) · [`runbook-deploy.md`](004-wkh-343-deposito-destinatario-sin-cuenta-token/runbook-deploy.md) · [`idl-hash.md`](004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md) · [`auto-blindaje.md`](004-wkh-343-deposito-destinatario-sin-cuenta-token/auto-blindaje.md) · `fix-pack-*.txt` · `w0`/`w1`/`w3`/`w5` |
+
+⚠️ **La fila 004 decía "in progress (F1 hecho, esperando `HU_APPROVED`)" y listaba un solo artefacto.**
+Medido el 2026-08-15: el deploy corrió el 2026-08-10 (`scripts/onchain-hash.py` devuelve
+`last deployed slot 482775110`), la carpeta tiene 13 archivos y `runbook-deploy.md` documenta el
+gate como satisfecho. **Lo que NO hay en la carpeta**, y por eso no se afirma acá: `ar-report.md`,
+`cr-report.md`, `qa-report.md` ni `report.md` de cierre, que la HU 003 sí tiene. `ls` de la carpeta es
+la comprobación.
 
 ## WKH-326 — resumen de una línea
 
@@ -52,20 +59,54 @@ pasó del slot `480496830` al `481495859`, firma
 `UjFgwnmUviG9kRVfCNB1kcKeGQAYxsJkZpKQHycM8o6KFFJhDETfzAQyjccQbXd8TgcasN7gyHazjfWhQudjK7F`. El IDL se
 republicó en `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC` por el camino del buffer, y `bfbdfe5a…`
 quedó re-clavado en `chaski-v3` (`bd85dfa`) y `wasiai-facilitator` (`f9bddce`), los dos verdes. Los
-dos hashes del binario (`59ec1098…` con el relleno de la cuenta, `455e4e36…` sin él) están en
-`.github/workflows/verified-build.yml` y en el README. Detalle y verificación en
+dos hashes del binario de **ese** deploy (`59ec1098…` con el relleno de la cuenta, `455e4e36…` sin él)
+estuvieron en `.github/workflows/verified-build.yml` y en el README hasta el deploy siguiente. Medido
+el 2026-08-15: hoy el workflow pinnea `940096242e…` y `2bd31779…`, que son los del binario del
+2026-08-10, y `59ec1098…` no aparece en ninguno de los dos archivos (`grep -c` en cada uno). Detalle y verificación en
 [`idl-hash.md`](003-wkh-326-cap-del-indice-liberado-en-close/idl-hash.md), sección de cierre.
 
 ## WKH-343 — resumen de una línea
 
-`deposit` no verifica que el `beneficiary` tenga cuenta de token para el mint del escrow, y `release`
-la exige sin poder crearla (`README.md:655-657` ya lo documentaba como límite conocido); F1 mide que
-esto puede ser síntoma de un mint equivocado (`lib.rs:518-529`: el co-firmante off-chain nunca valida
-el mint) y NO de un destinatario inválido en sí — sin confirmar en vivo, ver Missing Inputs del
-work-item. En paralelo, `scripts/list-live-escrows.py:170,198` recomienda liberar escrows bloqueados
-apoyado en que el upgrade de WKH-326 "todavía no pasó"; ya pasó, y hoy ese camino revierte. Work-item
-en F1, tres mediciones RPC pendientes (sin herramienta de ejecución disponible en esta sesión),
-esperando `HU_APPROVED`.
+`deposit` no verificaba que el `beneficiary` tuviera cuenta de token para el mint del escrow, y
+`release` la exige sin poder crearla (el límite está documentado en la sección "Known limitations" del
+README, bajo el título **`release` requires the beneficiary's token account to already exist**).
+**Resuelto y desplegado**: `deposit` ahora recibe `beneficiary_ata` como novena cuenta y la exige.
+
+⚠️ **Este resumen quedó viejo en tres frases y ninguna la caza un diff de este repo.** Corregido el
+2026-08-15:
+
+- *"F1 mide que esto puede ser síntoma de un mint equivocado (`lib.rs:518-529`: el co-firmante
+  off-chain nunca valida el mint)"* — el rango es de otra versión del archivo, y la afirmación es
+  falsa: el control **existe** desde el 2026-08-04 en el co-firmante off-chain, cosa que el propio
+  `///` de `mint` en `Deposit` ya dice hoy (`lib.rs:550-558`). Lo que ese control no hace es cubrir
+  los depósitos que no pasan por él.
+- *"`scripts/list-live-escrows.py:170,198` recomienda liberar escrows bloqueados apoyado en que el
+  upgrade de WKH-326 todavía no pasó"* — el script se reescribió y esas dos líneas son hoy parte de
+  la derivación de PDAs. Su propio `--help` ya declara que el nombre del flag es histórico y que ese
+  upgrade aterrizó el 2026-08-05.
+- *"esperando `HU_APPROVED`"* / *"tres mediciones RPC pendientes"* — la HU se implementó y se
+  desplegó; las mediciones se pueden correr desde acá, `getProgramAccounts` responde contra
+  `api.devnet.solana.com` (verificado 3 de 3 el 2026-08-15).
+
+## ⚠️ Las citas `archivo:línea` dentro de las carpetas de HU están fechadas a su HU
+
+Medido el 2026-08-15 con un barrido sobre `doc/sdd/00*`: hay **211** citas por número de línea hacia
+documentos vivos del repo — 131 a `README.md`, 42 a `doc/mutation-run.md`, 17 a `SECURITY.md`, 11 a
+`idl-hash.md` y 10 a `.nexus/project-context.md`.
+
+**La mayoría ya no aterriza en su párrafo, y no porque nadie se equivocara al escribirlas.**
+`README.md` pasó de ~1019 líneas cuando se abrió la carpeta 003 a 1280 hoy: cada edición del README
+corre todas las citas que apuntan más abajo. Dos ejemplos medidos: `story-HU-326.md:276` cita
+`README.md:607-623` para "Known limitations: el índice ya no se llena para siempre", y hoy `:607` cae
+en el párrafo del barrido del vault; `work-item.md:54` cita `README.md:370`, que hoy es prosa sobre la
+ventana de custodia.
+
+**No se corrigieron a propósito**: una carpeta de HU es el registro de lo que se decidió con la
+información de ese momento, y reescribir sus citas para que apunten al árbol de hoy convierte un
+registro en una ficción. Lo que sí se corrigió es todo lo que un lector toma por estado **actual**:
+`README.md`, `SECURITY.md`, `.nexus/project-context.md`, `doc/mutation-run.md`, este índice y el
+`idl-hash.md` de la 004. Dentro de las carpetas de HU, **leé por contenido y no por número**: buscá la
+frase citada con `grep`, no la línea.
 
 ## Contexto del proyecto
 

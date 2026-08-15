@@ -98,7 +98,8 @@ Two details worth writing down because they are not obvious from the table:
   That is a side effect of how 21 is written, not a second guard: 21 exists to report compute units.
 - **M18 kills 21 for a different reason, and the difference matters.** M18 never reaches that last
   assertion. The second `close` of test 21 passes `escrowIndex: null`
-  (`tests/escrow-index.ts:1206-1209`), and with `if let Some(index)` replaced by
+  (`tests/escrow-index.ts:1255-1258`, the `withoutIndex` call; published as `:1206-1209`, which is the
+  tail of a different test, and re-read 2026-08-15), and with `if let Some(index)` replaced by
   `.as_mut().unwrap()` the `unwrap()` on `None` panics, so that transaction fails inside
   `processIxs` before any assertion runs. That is the same reason M18 also kills 13, D1, D1b, E2, E3
   and `escrow.ts` 8: every one of those is a `close` without an index, and not one of them looks at

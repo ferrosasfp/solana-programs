@@ -25,9 +25,13 @@
 # a verified build: with `target/sbpf-solana-solana` deleted, `anchor build` was
 # run twice, once with `channel = "1.89.0"` and once with `channel = "stable"`
 # (rustc 1.97.1). Both produced escrow.so with sha256 10d6dd04...adf7 and
-# verify-hash 455e4e36...9291, which is the value devnet holds for
-# DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x at slot 481495859. Changing this
-# channel did not move the artifact. Changing the Agave version would.
+# verify-hash 455e4e36...9291, which is the value devnet HELD for
+# DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x at slot 481495859. It is not the
+# value devnet serves today: the 2026-08-10 deploy (slot 482775110) moved it to
+# 2bd31779...1bb6, and that says nothing about this file. What the experiment
+# established is the EQUALITY between the two channels, and that does not expire;
+# the hash does. Changing this channel did not move the artifact. Changing the
+# Agave version would.
 [toolchain]
 channel = "1.89.0"
 components = ["rustfmt","clippy"]

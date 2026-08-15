@@ -22,15 +22,15 @@ This is a project under implementation, not a finished product.
 | | |
 |---|---|
 | Deployed | Solana **devnet** only. No mainnet deployment exists. |
-| Source vs deployed | **The WKH-343 deploy has been run: devnet, 2026-08-10, slot `482775110`.** This tree carries WKH-343 — `deposit` requires the beneficiary's associated token account for the escrow's mint, one extra account at the end of `Deposit` — and that is now the deployed binary. Measured by hand the same day: the local build's `.so` is 276800 bytes, 276785 once trailing zeros are stripped, and its sha256 `2bd31779382f0bfc35f8470bc0ca1185c985d4c164fa05ec291658e05eb41bb6` equals the verify-hash read back from the chain, byte for byte. Both things that gated the deploy are resolved: the client sends the new account (`chaski-v3` `f643a64`, checked in the bundle actually served, not only in the source) and the beneficiary in use has its token account (`Cq9AinM9WCry8Pyk5EsFJ2hdQomKAUES7Cq7YLunRGMC`, created in signature `1VfVuqy2…`). The gate itself is written up in `doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/runbook-deploy.md`. ⚠️ **The hashes in [Deployment](#deployment) still describe the 2026-08-05 build and were not re-read after this deploy** — the one value that was re-read is the verify-hash quoted above. Previous deploys, for the record: WKH-326 (`close` releases the escrow's slot in the index), to devnet on 2026-08-05, in slot `481495859`; and before it the custody window (the release deadline, the deposit floor and ceiling, the vault sweep on `close`), on 2026-08-01 in slot `480496830`; ahead of that one the single live escrow that would have lost its release exit was drained and the ProgramData account was extended because the binary no longer fitted, both written up in [Before upgrading the deployed program](#before-upgrading-the-deployed-program). |
-| Money at risk | None in value: devnet, faucet money. **And read on 2026-08-10 at slot `482832547`, nothing is custodied either — which is a reading of a moment, not a property of the program.** That day's sequence, all on chain: four deposits that had been stuck for want of the beneficiary's token account, 40,000,000 raw, were refunded in slots `482579398`..`482580179`; a fifth, `5G4Zaa4RkMysquGpm61ENinp8kzo7Uu3kvpBAxFFwy4` with 5,000,000 raw of Circle's devnet USDC, was refunded in slot `482823756`; and six escrows were then closed with `close`, returning 0.024012 SOL of rent. **That fifth deposit landed in slot `482621992`, which is before the WKH-343 deploy in slot `482775110`**, so it is not the guard failing — it is the guard not being there yet. What is left: **6** `EscrowState` accounts, every vault at 0. **Re-read on 2026-08-11: of the eleven accounts the table under [The mint](#the-mint) lists, six no longer exist at all** — `5G4Zaa4RkMysq…` among them, so that fifth deposit was refunded *and* closed. An account that is gone is not a broken link, it is the expected end state of `close`, and the table below is therefore a dated photograph and not a live list. This row goes stale on its own, without anyone editing it, which is why it carries a slot. See [The mint](#the-mint). Re-measure with `python3 scripts/list-live-escrows.py --url devnet --markdown`; it prints the table under [The mint](#the-mint), not this sentence, so the counts here are read off that table by hand — which is how this row came to say 6/4 while the table said 7/3. |
+| Source vs deployed | **The WKH-343 deploy has been run: devnet, 2026-08-10, slot `482775110`.** This tree carries WKH-343 — `deposit` requires the beneficiary's associated token account for the escrow's mint, one extra account at the end of `Deposit` — and that is now the deployed binary. Measured by hand the same day: the local build's `.so` is 276800 bytes, 276785 once trailing zeros are stripped, and its sha256 `2bd31779382f0bfc35f8470bc0ca1185c985d4c164fa05ec291658e05eb41bb6` equals the verify-hash read back from the chain, byte for byte. Both things that gated the deploy are resolved: the client sends the new account (`chaski-v3` `f643a64`, checked in the bundle actually served, not only in the source) and the beneficiary in use has its token account (`Cq9AinM9WCry8Pyk5EsFJ2hdQomKAUES7Cq7YLunRGMC`, created in signature `1VfVuqy2…`). The gate itself is written up in `doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/runbook-deploy.md`. ✅ **Re-read 2026-08-15: the seven rows of [Deployment](#deployment) all describe the binary that is running today.** Until then this cell warned that they "still describe the 2026-08-05 build and were not re-read after this deploy", and that warning was false: it sent the reader away from the one table that was correct. Re-measure it yourself, it is one command and no toolchain: `python3 scripts/onchain-hash.py --program-id DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x --url devnet`, then compare its output line by line against that table. Previous deploys, for the record: WKH-326 (`close` releases the escrow's slot in the index), to devnet on 2026-08-05, in slot `481495859`; and before it the custody window (the release deadline, the deposit floor and ceiling, the vault sweep on `close`), on 2026-08-01 in slot `480496830`; ahead of that one the single live escrow that would have lost its release exit was drained and the ProgramData account was extended because the binary no longer fitted, both written up in [Before upgrading the deployed program](#before-upgrading-the-deployed-program). |
+| Money at risk | None in value: devnet, faucet money. ⚠️ **But this program IS custodying a balance right now, and every earlier version of this row said the opposite.** Read 2026-08-15 at 15:18Z, slot `484158416`, with `getProgramAccounts`: **10 `EscrowState` accounts, one of them `Deposited`.** That one is `Hr2Qt6qqJMrFg3bAboDzZzh8kd1ESgzJpUpZTBjnS6H8`, and its vault `7piawXnHaDQih6vV54uNjunWVunqhFJXBW5QjrG5hgwF` holds **13,500,000 raw** of Circle's devnet USDC (6 decimals, so 13.5 units; `state: initialized`, not frozen). Its deadline, `2026-08-15 10:36:06Z`, had already passed when it was read, so `release` reverts with `ReleaseWindowClosed` and the only exit left is a `refund` signed by the sender, `4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P`. That is exactly the condition `list-live-escrows.py --exit-nonzero-if-blocking` exists to trap, and it exits **1** today. **Do not read a number off this cell: derive it.** `python3 scripts/list-live-escrows.py --url devnet --markdown` prints the whole picture stamped with the slot it read, and the part that does not age is the criterion, not the count: anything in `Deposited` is custody, and anything in `Deposited` past its deadline is refund-only. This row went false three times without anyone editing it, which is the whole reason it now carries a timestamp, a slot and a command instead of an adjective. The 2026-08-10 sequence, kept because it is what the counts above replaced, all on chain: four deposits that had been stuck for want of the beneficiary's token account, 40,000,000 raw, were refunded in slots `482579398`..`482580179`; a fifth, `5G4Zaa4RkMysquGpm61ENinp8kzo7Uu3kvpBAxFFwy4` with 5,000,000 raw of Circle's devnet USDC, was refunded in slot `482823756`; and six escrows were then closed with `close`, returning 0.024012 SOL of rent. **That fifth deposit landed in slot `482621992`, which is before the WKH-343 deploy in slot `482775110`**, so it is not the guard failing — it is the guard not being there yet. What was left after that day was **6** `EscrowState` accounts with every vault at 0; four deposits have landed since, which is how the count got back to ten, and the four of them are `96Ra7eev…`, `C9a2UMJB…`, `HG6CNbSV…` and `Hr2Qt6qq…`. **And the arithmetic of the previous version of this cell did not close either**: it said that "of the eleven accounts the table under [The mint] lists, six no longer exist at all" and that six were left, which is twelve out of eleven, refuted inside its own sentence. Measured with `getMultipleAccounts` over those same eleven addresses at slot `484159891`: **five are absent** (`5G4Zaa4RkMysq…`, `2zWkoznm86cqX…`, `BSj3YUJUc98w8…`, `Crqz6hQoChPaP…`, `HnzegD1fxPNpp…`) and six are present. `5G4Zaa4RkMysq…` is among the absent ones, so that fifth deposit was refunded *and* closed. An account that is gone is not a broken link, it is the expected end state of `close`, and the table below is therefore a dated photograph and not a live list. This row goes stale on its own, without anyone editing it, which is why it carries a slot. See [The mint](#the-mint). One last trap of this cell, and it is the reason it has been wrong so often: the script prints the table under [The mint](#the-mint), **not** this sentence, so every count here is transcribed off that table by hand. That is how this row once came to say 6/4 while the table one screen below said 7/3. Refresh the table first, then read the counts off it. |
 | Upgrade authority | **Present.** The program is deployed under the upgradeable loader and its authority is a single devnet key. See [Upgrade authority](#upgrade-authority). |
 | External audit | **None.** The program has not been reviewed by a third party security firm. |
 | Test coverage | 61 tests, all passing locally. Behaviour driven, no fuzzing and no formal verification. On top of those, the custody window was exercised against the deployed program with seven real transactions, including the one that needs a genuinely expired deadline: see [The custody window, exercised against the deployed program](#the-custody-window-exercised-against-the-deployed-program). |
-| CI | clippy, `anchor build` and the 61 tests run on every push. See [Continuous integration](#continuous-integration). The standing instruction to **expect `SOURCE_REPRODUCES_CHAIN` to be red** held while this tree carried WKH-343 undeployed; it was deployed on 2026-08-10 (slot `482775110`), so that expectation no longer applies. What was measured by hand that day is the equality itself — the stripped sha256 of the local build equals the chain's verify-hash. What is **not** claimed here is the colour of the job: that needs a run of its own, and none is being reported. |
-| Reproducible build | **Confirmed for the binary deployed on 2026-08-05.** A GitHub runner rebuilt this tree in the pinned container on the push that carries these hashes ([run 31058371492](https://github.com/ferrosasfp/solana-programs/actions/runs/31058371492), commit `a0f9c27`) and both jobs passed: `reproducible-build` and `onchain-hash`. What that run establishes is that a machine which is not the developer's produced the same bytes that devnet serves. **What it does not establish: nobody outside this project has repeated any of it.** A GitHub runner is not this laptop, but it is still this project's workflow. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
-| On-chain IDL | **Published, and as of 2026-08-11 the tree, the chain and both consumers all carry the same text.** Canonical metadata account `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`. Measured that day, all four independently: this tree, `anchor idl fetch` off devnet, the facilitator's pin (`src/chains/escrow-idl.hash.test.ts:53`) and `chaski-v3`'s vendored copy (`src/infrastructure/solana/escrow-idl.ts`) each canonicalise to `cc2761266dcf8335a17562129de040805f37f69cfe654f5be472045ba7bfcd51` over 16,020 bytes. `deposit` carries its nine accounts with `beneficiary_ata` last. The value published between 2026-08-10 and 2026-08-11 was `d295b7c74ff9a2ac758e24cc9e7d32d3c09d5943e1b137ef67f4f2692993c70e`, and before the 2026-08-05 deploy `bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`; both are kept here so the movement can be audited, and **neither is pinned by anything today**. ⚠️ **Getting to that agreement cost an outage of several hours on 2026-08-11, caused by a script in this repository, and the mechanism is worth more than the fix.** `scripts/publish-idl.sh` opened with an unconditional `close idl`, justified by a sentence written in the script itself claiming the tool "does not overwrite". That sentence was a conjecture, never measured, and it is false: `write` is create-or-update and `update` exists. A guess written in the present tense inside code reads later as a measurement, and this one authorised a destructive step against the only published copy. The script now closes nothing until a verified replacement exists, is a no-op when the on-chain content already matches, and surfaces the tool's errors instead of discarding them. The republication itself needs the upgrade authority's keypair, which is not in this repo. The **binary did not move** across any of this: `target/deploy/escrow.so` hashes to `257083a98deec45816b97e63508e258d9660c7275a31ce8b5326692bb897003e` and is 276800 bytes, so **no program deploy is owed**. `deposit`'s discriminator and its five args did **not** move, and the new account goes last, so no existing account index shifted; how the value is derived is written up in `doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md`. The explorer may still not render Anchor IDLs; fetching works regardless. See [Publishing the IDL on chain](doc/publish-idl-onchain.md), including why the documented command fails and what worked instead. **Three doc comments in `lib.rs` are wrong, and the window to fix them is shut again.** Anchor copies doc comments into the IDL, so editing a `///` or `//!` moves the canonical sha256, which now costs a republish on chain plus a re-pin in both consumers — that is why these corrections get parked in adjacent `//` comments instead. WKH-343 opened that window and it was spent on exactly one of them: the mint paragraph, which cited an off-chain co-signer check that does not exist and which that change also contradicts, since `deposit` now enforces a *relational* constraint between the mint and the beneficiary. Still wrong **on chain**, each waiting for a change of its own: "clamped" (the deadline is rejected, not clamped), which belongs to another HU and already has its `//` next to it; and the `MAX_ENTRIES` comment, which sits on a `const` and, measured, never reaches this IDL at all because it has no `constants` section. The third, the `sender_ata` note on `Close`, **is fixed in this tree and not yet on chain**: it used to say *"Hoy ningún consumidor construye `close`"*, false twice over since `chaski-v3` builds `close` (`src/infrastructure/solana-wallet.ts:911`) and six `close` transactions confirmed on devnet on 2026-08-10. It was not corrected in place but **rewritten to stop making that kind of claim at all**: the program now documents its own contract (this account is mandatory, and `close` sweeps the whole vault balance into it) and says that who builds the instruction is a fact of the consumer repos, documented there. A sentence about other repositories, living in this one, goes false without anybody editing this file — which is exactly what happened. The edit is line neutral, 5 lines for 5, so no citation into `lib.rs` moved. |
-| Known issues | Written down below, **and three of them are about custody**: a mint with a freeze authority can freeze the vault (and the mint holding every custodied unit today has one), the vault's associated token account can be pre-created by a stranger to block a deposit, and past the deadline an escrow whose sender lost their key has no exit at all. See [Known limitations](#known-limitations). |
+| CI | clippy, `anchor build` and the 61 tests run on every push. See [Continuous integration](#continuous-integration). The standing instruction to **expect `SOURCE_REPRODUCES_CHAIN` to be red** held while this tree carried WKH-343 undeployed; it was deployed on 2026-08-10 (slot `482775110`), so that expectation no longer applies. What was measured by hand that day is the equality itself — the stripped sha256 of the local build equals the chain's verify-hash. The colour of the job used to be left unclaimed here for want of a run to point at. There is one now: on commit `ce382a8` (2026-08-13) both workflows concluded `success` — `escrow-ci` and `verified-build`, the latter with both of its jobs green. Read on 2026-08-15 with `gh run list --limit 8 --json displayTitle,conclusion,headSha,name`, which is also how you refute it, since the answer is about the newest commit and not about this sentence. |
+| Reproducible build | **Confirmed for the binary deployed on 2026-08-10, the one running today.** A GitHub runner rebuilt this tree in the pinned container and both jobs passed: `reproducible-build` and `onchain-hash` ([run 31730137583](https://github.com/ferrosasfp/solana-programs/actions/runs/31730137583), commit `ce382a8`, 2026-08-13). That run pins `EXPECTED_VERIFY_HASH` to `2bd31779…`, which is what devnet serves today, and `SOURCE_REPRODUCES_CHAIN` is `true`, so none of the three assertions was skipped. What was checked on 2026-08-15 is the **conclusion of both jobs**, read with `gh run view 31730137583 --json jobs`; the run's log had already expired, so the printed hash lines are not quoted here. The previous binary was confirmed the same way ([run 31058371492](https://github.com/ferrosasfp/solana-programs/actions/runs/31058371492), commit `a0f9c27`). What that run establishes is that a machine which is not the developer's produced the same bytes that devnet serves. **What it does not establish: nobody outside this project has repeated any of it.** A GitHub runner is not this laptop, but it is still this project's workflow. See [Reproducing the deployed binary](#reproducing-the-deployed-binary). |
+| On-chain IDL | **Published, and as of 2026-08-11 the tree, the chain and both consumers all carry the same text.** Canonical metadata account `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`. Measured that day, all four independently: this tree, `anchor idl fetch` off devnet, the facilitator's pin (`src/chains/escrow-idl.hash.test.ts:53`) and `chaski-v3`'s vendored copy (`src/infrastructure/solana/escrow-idl.ts`) each canonicalise to `cc2761266dcf8335a17562129de040805f37f69cfe654f5be472045ba7bfcd51` over 16,020 bytes. `deposit` carries its nine accounts with `beneficiary_ata` last. The value published between 2026-08-10 and 2026-08-11 was `d295b7c74ff9a2ac758e24cc9e7d32d3c09d5943e1b137ef67f4f2692993c70e`, and before the 2026-08-05 deploy `bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`; both are kept here so the movement can be audited, and **neither is pinned by anything today**. ⚠️ **Getting to that agreement cost an outage of several hours on 2026-08-11, caused by a script in this repository, and the mechanism is worth more than the fix.** `scripts/publish-idl.sh` opened with an unconditional `close idl`, justified by a sentence written in the script itself claiming the tool "does not overwrite". That sentence was a conjecture, never measured, and it is false: `write` is create-or-update and `update` exists. A guess written in the present tense inside code reads later as a measurement, and this one authorised a destructive step against the only published copy. The script now closes nothing until a verified replacement exists, is a no-op when the on-chain content already matches, and surfaces the tool's errors instead of discarding them. The republication itself needs the upgrade authority's keypair, which is not in this repo. The **binary did not move** across any of this: `target/deploy/escrow.so` hashes to `257083a98deec45816b97e63508e258d9660c7275a31ce8b5326692bb897003e` and is 276800 bytes, so **no program deploy is owed**. `deposit`'s discriminator and its five args did **not** move, and the new account goes last, so no existing account index shifted; how the value is derived is written up in `doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md`. The explorer may still not render Anchor IDLs; fetching works regardless. See [Publishing the IDL on chain](doc/publish-idl-onchain.md), including why the documented command fails and what worked instead. **Two comments in `lib.rs` are still wrong, and the cost of fixing them is not what this cell used to claim.** It said "Anchor copies doc comments into the IDL, so editing a `///` or `//!` moves the canonical sha256". Anchor copies **some** of them, and which ones is measurable rather than a matter of belief. Measured 2026-08-15 on `target/idl/escrow.json`, the file that hashes to the value above: `docs` appears on instructions and on the accounts of an instruction, the top level `docs` is `null`, and there is no `constants` section at all. So the word `clamped`, which lives only in the `//!` module header (`lib.rs:38`), **is not in the IDL**, and neither is `MAX_ENTRIES`, whose `///` sits on a `const`. Correcting either of those does not move the IDL and therefore does not move the canonical sha256, does not need a republication and does not need a re-pin. The check is one line, `python3 -c "print('clamped' in open('target/idl/escrow.json').read())"`, and it prints `False`. ⚠️ **It can still move the binary, and that is a separate cost that has been measured here.** The `.so` embeds the line numbers of the account constraints, so a comment edit that adds or removes lines shifts them and changes the artifact: `doc/mutation-run.md` records exactly that, 19 added `//` lines moving `target/deploy/escrow.so` from md5 `b024cd91…` to `1ee62827…` while `target/idl/escrow.json` stayed byte for byte identical. A **line neutral** edit, the same number of lines in as out, leaves the binary alone; that is why the `sender_ata` correction was written 5 lines for 5. What **does** move the hash is a `///` on an instruction handler or on an account inside a `#[derive(Accounts)]` struct, and only that case costs a republish on chain plus a re-pin in both consumers. WKH-343 opened that window and it was spent on exactly one of them: the mint paragraph, which cited an off-chain co-signer check that does not exist and which that change also contradicts, since `deposit` now enforces a *relational* constraint between the mint and the beneficiary. Still wrong in the **source**, and only there: "clamped" (the deadline is rejected, not clamped), which belongs to another HU and already has its `//` next to it, and the `MAX_ENTRIES` comment, which sits on a `const`. Neither of the two is wrong on chain, because neither of the two reaches the IDL — that is the measurement above, and it is also the reason the phrase "the window to fix them is shut" was never true for these two. The third, the `sender_ata` note on `Close`, **is fixed, in this tree and on chain.** This cell used to say it was "fixed in this tree and not yet on chain", one screen after saying that the tree, the chain and both consumers all canonicalise to the same 16,020 bytes; the two cannot both hold, and the one that is measured is the second. It used to say *"Hoy ningún consumidor construye `close`"*, false twice over since `chaski-v3` builds `close` (`src/infrastructure/solana-wallet.ts`, the `.close(...)` call, **line 1220** on `chaski-v3` `40f0b68`, read 2026-08-15) and six `close` transactions confirmed on devnet on 2026-08-10. That line number lives in another repository and moves when that repository is edited, which is exactly how it came to point at line 911: locate it with `grep -n '\.close('` instead of trusting the number. It was not corrected in place but **rewritten to stop making that kind of claim at all**: the program now documents its own contract (this account is mandatory, and `close` sweeps the whole vault balance into it) and says that who builds the instruction is a fact of the consumer repos, documented there. A sentence about other repositories, living in this one, goes false without anybody editing this file — which is exactly what happened. The edit is line neutral, 5 lines for 5, so no citation into `lib.rs` moved. |
+| Known issues | Written down below, **and three of them are about custody**: a mint with a freeze authority can freeze the vault (and the mint holding every custodied unit on 2026-08-15 is Circle's devnet USDC, whose freeze authority is `CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT` and is not ours; the vault holding it reads `state: initialized`, so it is exposure and not an incident), the vault's associated token account can be pre-created by a stranger to block a deposit, and past the deadline an escrow whose sender lost their key has no exit at all. See [Known limitations](#known-limitations). |
 
 What we do claim: the custody properties below are enforced by account constraints, and each one
 has a test that tries to break it. What we do not claim: that an audit would find nothing.
@@ -107,8 +107,10 @@ That tells you what is deployed. It does not tell you the deployed bytes came fr
 source. For that, see [Reproducing the deployed binary](#reproducing-the-deployed-binary).
 
 The program id has a single source of truth, `declare_id!` in
-[`programs/escrow/src/lib.rs:5`](programs/escrow/src/lib.rs#L5), mirrored in `Anchor.toml` and in
-the generated IDL. If you need it in client code, read `idl.address` rather than copying the
+[`programs/escrow/src/lib.rs:70`](programs/escrow/src/lib.rs#L70), mirrored in `Anchor.toml` and in
+the generated IDL. (This said `:5` until 2026-08-15, and `#L5` on GitHub lands on a line of the
+module header comment, so the anchor showed prose instead of the macro. `grep -n 'declare_id' `
+settles it in one command.) If you need it in client code, read `idl.address` rather than copying the
 literal.
 
 ### Live traffic on devnet
@@ -154,9 +156,11 @@ refused everything would pass all five. E and G prove it also pays out, to the r
 directions of the window.
 
 Nothing was left stranded by that upgrade: `list-live-escrows.py --exit-nonzero-if-blocking` exited
-0 right after it. Measured again on 2026-08-10 at slot `482593777` it exits **0**, because no escrow
-is in `Deposited` at all any more: the four that were past their deadline were refunded by their
-sender that day. Do not read a fixed value into this line — the flag reports the state of devnet at
+0 right after it. Measured again on 2026-08-15 at slot `484158416` it exits **1**, and the
+reason is on the page it prints: one escrow is `Deposited` with its deadline already past
+(`Hr2Qt6qq…`, 13,500,000 raw of Circle's devnet USDC, deadline `2026-08-15 10:36:06Z`), which is
+refund-only. On 2026-08-10, at slot `482593777`, the same command exited **0**. Nobody edited the
+script or this file in between: the chain moved. Do not read a fixed value into this line — the flag reports the state of devnet at
 the instant it runs, and that state changes without anybody editing this file (measured: four rows
 changed status inside a single session, between slots `482578481` and `482583139`). Run the script;
 do not trust the number written here. An escrow whose deadline has passed having only the sender's
@@ -170,11 +174,13 @@ bytes were produced by the source in this repository, and that you can produce t
 
 ### What you can check right now
 
-> **These hashes describe the binary deployed on 2026-08-05, the WKH-326 one.**
-> They were read back from devnet after the upgrade, not predicted from the build. The container
-> rebuild that reproduced an *earlier* binary has not been re-run against this one yet, so read
-> the confirmation table below carefully: what is proven for this binary is that the deployed bytes
-> equal the ones built on the machine that deployed them, and nothing more.
+> **These hashes describe the binary deployed on 2026-08-10, the WKH-343 one, which is what devnet
+> serves today.** They were read back from devnet after the upgrade, not predicted from the build.
+> ⚠️ Until 2026-08-15 this section published the hash of the **2026-08-05** binary under a heading
+> that says "right now" and an imperative that says "must both print". A reviewer who ran it got a
+> mismatch on the most important claim in this repository, caused by nothing but a number that was
+> never refreshed. If the value below ever disagrees with `scripts/onchain-hash.py`, believe the
+> script.
 
 ```bash
 git clone https://github.com/ferrosasfp/solana-programs
@@ -188,19 +194,25 @@ solana-verify -u https://api.devnet.solana.com get-program-hash DR5GoMT7sAKzD6wZ
 The last two commands must both print:
 
 ```
-455e4e36fa7c63be568d470a89f7eded9aff5806b198340936a578810be09291
+2bd31779382f0bfc35f8470bc0ca1185c985d4c164fa05ec291658e05eb41bb6
 ```
 
 **`artifact-sha256` stopped being a comparison you can reproduce, and that changed on 2026-08-01.**
 Until then the ProgramData account was sized to fit the binary exactly, so the payload on chain was
 the binary and its hash equalled `sha256sum target/deploy/escrow.so`. The extend added 150000 bytes
 of reserved space, and the loader zero-fills the remainder, so `artifact-sha256` now hashes 412568
-bytes of which 137768 are padding. No local build will ever produce it. It is published as a
-description of the account, not as a check.
+bytes, of which **135768** are the reserved space that no build produces. (That number is
+`412568 − 276800` and it moves with every build; the figure published here until 2026-08-15 was
+137768, which was right for the 274800 byte binary of 2026-08-05 and wrong for this one.) No local
+build will ever produce `artifact-sha256`. It is published as a description of the account, not as
+a check.
 
 `verify-hash` is the number that still means something, because it is taken after trailing zeros are
-trimmed. On the machine that deployed it, `sha256` of `target/deploy/escrow.so` with trailing zeros
-removed is exactly `455e4e36...`, which is what devnet reports. That is the comparison to run.
+trimmed. Measured 2026-08-15 on this tree: `target/deploy/escrow.so` is 276800 bytes, its last 15
+bytes are zeros, and the `sha256` of the remaining **276785** is
+`2bd31779382f0bfc35f8470bc0ca1185c985d4c164fa05ec291658e05eb41bb6`, which is exactly what devnet
+reports for the deployed program. The three numbers close: 276785 + 15 + 135768 = 412568. That is
+the comparison to run.
 
 `-u` has to come before the subcommand. It is a global argument read from the top level, and
 placed after `get-program-hash` the tool quietly falls back to mainnet, where this program does
@@ -210,13 +222,13 @@ not exist.
 
 | | |
 |---|---|
-| The deployed bytes equal our local `target/deploy/escrow.so` | **Confirmed** for the 2026-08-05 binary, on the machine that built and deployed it: devnet reports `verify-hash` `455e4e36...` and the local artifact (274800 bytes, `sha256` `10d6dd04...`) with trailing zeros trimmed hashes to the same value. The on-chain payload is that file plus 137768 zero bytes of reserved space. |
+| The deployed bytes equal our local `target/deploy/escrow.so` | **Confirmed** for the 2026-08-10 binary, re-measured 2026-08-15: devnet reports `verify-hash` `2bd31779...`, and the local artifact (276800 bytes, `sha256` `257083a9...`) with its 15 trailing zeros trimmed hashes to that same value. The on-chain payload is that file plus 135768 zero bytes of reserved space. The equivalent row for the 2026-08-05 binary read `455e4e36...` against a 274800 byte artifact; both are stated here so the movement is auditable and neither is passed off as current. |
 | The binary carries no path from that machine | **Confirmed.** The only absolute path embedded is inside the precompiled platform-tools, identical for everyone using the same Agave version. |
-| A container rebuild reproduces those bytes | **Confirmed for the binary deployed on 2026-08-05.** [Run 31058371492](https://github.com/ferrosasfp/solana-programs/actions/runs/31058371492) on commit `a0f9c27`, the push that carries the current hashes, passed both jobs: `reproducible-build` (the pinned container rebuilt this tree) and `onchain-hash` (the rebuilt bytes compared against devnet). The previous binary was confirmed the same way ([run 30713836991](https://github.com/ferrosasfp/solana-programs/actions/runs/30713836991), `9d9c0679...`). What this does **not** establish: nobody outside this project has repeated it. A GitHub runner is not the developer's machine, but it is still this project's workflow, so the independence it buys is partial. |
+| A container rebuild reproduces those bytes | **Confirmed for the binary deployed on 2026-08-10, the one running today.** [Run 31730137583](https://github.com/ferrosasfp/solana-programs/actions/runs/31730137583) on commit `ce382a8` passed both jobs: `reproducible-build` (the pinned container rebuilt this tree) and `onchain-hash` (the deployed bytes against the hashes published here). On that commit `EXPECTED_VERIFY_HASH` is `2bd31779…` and `SOURCE_REPRODUCES_CHAIN` is `true`, so the job asserted rebuilt == published == devnet and skipped none of the three. What was read on 2026-08-15 is the conclusion of the two jobs (`gh run view 31730137583 --json jobs`); the log itself had expired, so no hash line is quoted from it. Earlier binaries were confirmed the same way ([run 31058371492](https://github.com/ferrosasfp/solana-programs/actions/runs/31058371492), `a0f9c27`; [run 30713836991](https://github.com/ferrosasfp/solana-programs/actions/runs/30713836991), `9d9c0679...`). What this does **not** establish: nobody outside this project has repeated it. A GitHub runner is not the developer's machine, but it is still this project's workflow, so the independence it buys is partial. |
 | An independent third party reproduced it | **Not confirmed.** Nobody outside this project has tried yet. A GitHub runner is not our laptop, but it is still our workflow. |
 
-So: the mechanism is wired up and public, it was green against the previous binary, and it is
-pending against the one on chain right now. What is still missing beyond that is somebody with no
+So: the mechanism is wired up and public, and it is green against the binary that is on chain right
+now, not only against a previous one. What is still missing beyond that is somebody with no
 stake in this repository running it and saying so. If it does not reproduce on your machine, that is
 a finding we want to hear about.
 
@@ -521,11 +533,17 @@ sitting in a fourth status, `PayoutPending`. It was taken out before review clos
 on the branch `feat/ventana-de-custodia-fase2`.
 
 **Why it was taken out.** The two off-chain consumers pin an IDL whose `EscrowStatus` has exactly
-three variants (`chaski-v3/src/infrastructure/solana/escrow-idl.ts:497` and its twin in
+three variants (`chaski-v3/src/infrastructure/solana/escrow-idl.ts:1513-1525` and its twin in
 `wasiai-facilitator/src/chains/escrow-idl.ts`), and a status byte of 3 makes their
-`BorshAccountsCoder` throw. In `chaski-v3` that `coder.decode` sits on the refund path
-(`src/infrastructure/solana-wallet.ts:352`) and is **not** inside a `try`, so the person who sent
-the remittance would be unable to recover their money from the product. The facilitator does catch
+`BorshAccountsCoder` throw. In `chaski-v3` that `coder.decode` sits on the refund path, inside
+`refundEscrow` (`src/infrastructure/solana-wallet.ts:914`, the decode at `:963`), and is **not**
+inside a `try`, so the person who sent the remittance would be unable to recover their money from
+the product. ⚠️ Those three numbers are lines of **another repository** and they were 300 lines off
+until 2026-08-15 (they read `:497` and `:352`, measured against `chaski-v3` `40f0b68`). This one is
+worth re-deriving rather than trusting, because the same file contains the opposite case: `closeEscrow`
+(`:1146`) **does** wrap its decode in a `try/catch` (`:1187-1194`), so a citation that lands in the
+wrong method shows a reader the reverse of what this paragraph claims. `grep -n 'coder.decode' src/infrastructure/solana-wallet.ts`
+lists every one of them. The facilitator does catch
 it (`readEscrowState` never throws) and returns `{ ok: false }`, which means it refuses to sign the
 release. The two together are the problem: not releasable and not refundable at the same time. A
 feature meant to protect the payout would have created the one state where nobody can get the funds
@@ -555,16 +573,16 @@ entrapment we know of, and it comes from outside the program: the program cannot
 it or route around it. It sits next to the decision not to pin the mint (see [The mint](#the-mint)):
 choosing the mint is choosing whose freeze authority you are exposed to.
 
-This one is not hypothetical, and it is stated in the past tense on purpose, because the balance it
-described is gone. **When this program last custodied anything, the limitation covered 100% of it.**
-Measured 2026-08-05 at that time: the escrows then holding funds on devnet were denominated in
-Circle's devnet USDC, whose freeze authority is `CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT` and
-is not ours. Those vaults were never frozen (`state: initialized`, read the same day) and the
-economic exposure was zero: faucet money. Measured again 2026-08-10 at slot `482593777`, **nothing
-is custodied**: all 10 `EscrowState` accounts are terminal and none is `Deposited`, so right now the
-limitation covers no balance at all. That is a fact about today's devnet, not a property of the
-design: the exposure returns with the next deposit on a mint whose freeze authority is not ours. The
-measurement and the commands to repeat it are in [The mint](#the-mint).
+This one is not hypothetical, and it is stated in the **present** tense because that is what the
+chain says. **Every unit this program custodies right now is on a mint whose freeze authority is not
+ours, so the limitation covers 100% of it.** Measured 2026-08-15 at slot `484158416`: one escrow is
+`Deposited`, `Hr2Qt6qq…`, and its vault holds 13,500,000 raw of Circle's devnet USDC, whose freeze
+authority is `CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT`. That vault is **not** frozen
+(`state: initialized`, read the same minute) and the economic exposure is zero: faucet money. This
+paragraph was written in the past tense on 2026-08-10 — "nothing is custodied … the limitation
+covers no balance at all" — and that sentence went false four days later without anybody editing
+it, which is the mechanism worth remembering: the exposure returns with the next deposit, not with
+an edit to this file. The measurement and the commands to repeat it are in [The mint](#the-mint).
 
 **The vault's associated token account can be pre-created by a stranger, blocking the deposit.**
 `deposit` creates the vault with `init`, not `init_if_needed`. The address is an associated token
@@ -717,8 +735,10 @@ solana program dump DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x /tmp/escrow.so 
 strings -n 4 /tmp/escrow.so | grep -A 16 'BEGIN SECURITY.TXT'
 ```
 
-That works against the binary deployed on 2026-08-05. Its `=======BEGIN SECURITY.TXT V1=======`
-marker starts at offset 236032 of the dump, and the block carries the contact, the policy URL, the
+That works against the binary deployed on 2026-08-10, the one devnet serves today: measured
+2026-08-15 by pulling the ProgramData account over RPC and searching the payload, its
+`=======BEGIN SECURITY.TXT V1=======` marker starts at offset 237984 of the dump (it was 236032 in
+the 2026-08-05 binary), and the block carries the contact, the policy URL, the
 source repository, and `auditors: None`, which is the honest value and stays that way until it is
 not. The offset moves with every build, so grep for the marker rather than seeking to the number.
 
@@ -756,15 +776,16 @@ Two devnet mints show up around this program and they are easy to confuse:
 python3 scripts/list-live-escrows.py --url devnet --markdown
 ```
 
-⚠️ **Measured 2026-08-11: that command does not run today, and the reason is not in this repository.**
-It needs `getProgramAccounts`, and both endpoints within reach refuse it for different reasons: the
-public `https://api.devnet.solana.com` answers `HTTP 429 Too Many Requests` under normal congestion,
-and the dedicated provider this project moved to on 2026-08-11 answers
-`getProgramAccounts is not available on the Free tier`. So the refresh instruction above is currently
-a dead end, and the table under it cannot be regenerated until an endpoint that serves
-`getProgramAccounts` is available — a second key without a domain allowlist, a paid tier, or the public
-endpoint on a quiet day with backoff. **This is a real gap and not a cosmetic one**: this script is what
-answers "which escrows are stuck and can the beneficiary receive", and it gates the deploy.
+⚠️ **This block used to say the command "does not run today". It runs.** Measured 2026-08-15 against
+`https://api.devnet.solana.com`: three consecutive `getProgramAccounts` calls for this program
+answered, ten accounts each time, with no backoff and no `429`, and the script below was run
+end to end against that endpoint to produce the table. What was measured on 2026-08-11 and is
+**not** re-measured here is the dedicated provider's refusal
+(`getProgramAccounts is not available on the Free tier`); that may well still hold, and it does not
+matter, because the conclusion drawn from it was the false part. The table under this line **can**
+be regenerated, and the excuse for it being stale was propping up two counts elsewhere in this file
+that were wrong. A public endpoint can rate-limit at any moment, so if you get a `429`, retry with
+backoff rather than concluding the number here cannot be refreshed.
 
 all eight columns of it, pasted unedited, so that refreshing it is a copy and not a transcription. It
 stamps itself with the slot it read, so a refreshed row cannot silently lose its date.
@@ -777,49 +798,51 @@ anybody who ran the command got eight columns that did not fit and would have tr
 again — the same mechanism that had already left two versions of this paragraph wrong. If you shorten
 the table, say that you did.
 
-measured 2026-08-10 11:00:33Z at slot 482622899 against https://api.devnet.solana.com, program DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x
+measured 2026-08-15 15:18:20Z at slot 484158416 against https://api.devnet.solana.com, program DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x
 
 | escrow | status | amount (raw) | mint | beneficiary | deadline | beneficiary can receive | exit |
 |---|---|---|---|---|---|---|---|
-| `5G4Zaa4RkMysquGpm61ENinp8kzo7Uu3kvpBAxFFwy4` | Deposited | 5000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-10 12:55:42Z | **NO** | live until 2026-08-10 12:55:42Z |
 | `2eWYonV4PjznByNkLu7u8YLvbZcSh37d4QzreqeTVG14` | Refunded | 500000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-01 18:58:23Z | yes | terminal |
-| `2zWkoznm86cqX6bWExsR3Wvw5njffDpxuCJCXTsT7LWb` | Refunded | 5000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-09 17:07:45Z | **NO** | terminal |
 | `4YRtEL1RGuu5zkSYwMUrkEJajbFLbJFKsojMNEoHxVPo` | Refunded | 1000000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-07-27 22:08:03Z | yes | terminal |
 | `93ZUG1zdVrUTHv4zuup1wDCPdYrXa8QegU42D4rfzuJL` | Released | 500000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-01 19:56:59Z | yes | terminal |
-| `BSj3YUJUc98w89ckWb96shfRv4sakJuu4BjfKuhmvgdq` | Refunded | 5000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-08 09:29:54Z | **NO** | terminal |
+| `96Ra7eevjj9GpcGC9g48nQFnvrjnf5h8izsW2b9PtypJ` | Refunded | 12000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-11 17:51:58Z | yes | terminal |
 | `BmHDdjKLCJXcdzd8CqbHaeRWY9utbviZduXhbnH5Jm9F` | Refunded | 10000000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-07-22 21:48:46Z | yes | terminal |
-| `Crqz6hQoChPaP3TVPU4H7kbXo4FPUXz3NzriG3JYmWdw` | Refunded | 20000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-05 21:31:48Z | **NO** | terminal |
+| `C9a2UMJB4xLC7ZFTPmMyYGgayRbgpUXZrJiaJCBZPEc7` | Refunded | 15000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-11 15:10:36Z | yes | terminal |
 | `DHc1DYrSm2QeWe6txAs5NnDSzKYeXcCC1WUwviHk11oj` | Released | 2000000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-07-27 23:20:29Z | yes | terminal |
 | `GXY2todK6pJPdT8h1EcRNZgFX7cZXEnDN7L3XSHCHY2J` | Released | 10000000 | `8yRX3fZ2hFtTFdBhUBG7jZwnNEwYUFhMFsDP7vzWwz3Q` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-07-22 18:36:14Z | yes | terminal |
-| `HnzegD1fxPNpp7DadNWpStS2a5siSVXVXWV2dykJx3uS` | Refunded | 10000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-08 03:12:27Z | **NO** | terminal |
+| `HG6CNbSV4quZV42W9ikiRRZPST5tdXdAkcbHDLcS73Ae` | Released | 7000000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-13 18:27:05Z | yes | terminal |
+| `Hr2Qt6qqJMrFg3bAboDzZzh8kd1ESgzJpUpZTBjnS6H8` | Deposited | 13500000 | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq` | 2026-08-15 10:36:06Z | yes | REFUND-ONLY, refund signed by `4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P` |
 
-11 escrow_state account(s) total; 0 refund-only; 1 with an unpayable beneficiary.
+10 escrow_state account(s) total; 1 refund-only; 0 with an unpayable beneficiary.
 
-Eleven `EscrowState` accounts, six on our test mint (`8yRX3fZ2…`) and five on Circle's (`4zMMC9sr…`).
-Ten are terminal — seven `Refunded`, three `Released` — and **one is `Deposited`**: the first row,
-5,000,000 raw of Circle's USDC, still inside its release window and with `beneficiary can receive:
-**NO**`.
+⚠️ 1 escrow(s) are Deposited with the deadline already past (refund-only)
 
-⚠️ **That row appeared while this HU was under review**, between slot `482620696` (when this table read
-eleven-minus-one and every account was terminal) and `482622899`. It is the incident this change
-prevents, happening again against the binary that was deployed **at that time**, which did not have the
-guard. ⚠️ **This clause used to end "the guard is in `deposit` and the deploy has not run", and by the
-time anyone read it that was false**: the WKH-343 deploy landed in slot `482775110`, and this table was
-read at slot `482622899`, which is *earlier*. So the file contradicted itself, one screen apart, and
-the contradiction was created by the deploy and not by an edit. That is the same failure this section
-is about. Nothing about the incident is hypothetical, and nothing in this
-repository caused it. Two earlier versions of this paragraph counted eight accounts and named two of
-them as the only ones still `Deposited`; those two addresses are now absent from the chain entirely.
-This is the clearest case in the repo of a paragraph that goes stale with nobody editing it — the
-paste-from-a-command lowers the cost of refreshing it, and **does not** stop it going stale.
+Ten `EscrowState` accounts, six on our test mint (`8yRX3fZ2…`) and four on Circle's (`4zMMC9sr…`).
+Nine are terminal — five `Refunded`, four `Released` — and **one is `Deposited`**: the last row,
+13,500,000 raw of Circle's USDC, **past its deadline**, so the only exit it has left is a refund
+signed by its sender. The table above replaced one read on 2026-08-10 at slot `482622899`, which
+listed eleven accounts; five of those eleven have since been closed and four deposits have landed,
+which is how eleven becomes ten.
 
-The `beneficiary can receive` column is the WKH-343 check, and it is the useful one: all eleven escrows
-share one beneficiary (`Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq`), whose **canonical associated
-token account** exists for our test mint (`BQC6fXinyR4KnESJso1oY8nnbQjXjbFAJb221V7UkiVe`) and does
-**not** exist for Circle's (`Cq9AinM9WCry8Pyk5EsFJ2hdQomKAUES7Cq7YLunRGMC`). The five rows on Circle's
-mint are exactly the five deposits that could not be released, because `release` requires that one
-address and does not create it — four already refunded, and one still holding tokens. Creating that
-account is one transaction, payable by anyone, and it needs no signature from the beneficiary.
+⚠️ **This is the paragraph in the repository that has gone stale most often, and every time the cause
+was the same: nobody edited it.** Four versions on record. One counted eight accounts and named two of
+them as the only ones still `Deposited`; both addresses are now gone from the chain. One announced a
+deposit that "appeared while this HU was under review" and warned that "the guard is in `deposit` and
+the deploy has not run", which was already false when it was read, because the WKH-343 deploy landed in
+slot `482775110` and the table was read at `482622899`, earlier. One said nothing was custodied. The
+table above is the fourth, and it will go stale too: the paste-from-a-command lowers the cost of
+refreshing it and **does not** stop it going out of date. Read the slot in its header before you read
+anything else in it.
+
+The `beneficiary can receive` column is the WKH-343 check, and it is the useful one: all ten escrows
+share one beneficiary (`Dr37oH97XPapexJCaE8McQJDxjKiBW6u6Hz7jzFyLXNq`), and as of 2026-08-15 its
+**canonical associated token account** exists for **both** mints: `BQC6fXinyR4KnESJso1oY8nnbQjXjbFAJb221V7UkiVe`
+for our test mint and `Cq9AinM9WCry8Pyk5EsFJ2hdQomKAUES7Cq7YLunRGMC` for Circle's, both read
+`state: initialized`. That second one is the change: until it was created (in signature `1VfVuqy2…`)
+every row on Circle's mint printed `beneficiary can receive: **NO**`, and those deposits could not be
+released at all, because `release` requires that exact address and does not create it. Creating it is
+one transaction, payable by anyone, and it needs no signature from the beneficiary — which is why this
+column can flip from `NO` to `yes` for a whole mint without any change to this program.
 
 The word "canonical" is doing work there. The column asks for the derived ATA address, not for "does
 the beneficiary hold this mint somewhere": the program compares the address
@@ -835,25 +858,28 @@ account constraints still pass, so a `release` can be built, and the SPL transfe
 `AccountFrozen`. Only the mint's freeze authority can lift it — and on the mint that has actually held
 custody here, that authority is not ours (see the table above). A frozen row prints `**NO** (frozen)`.
 
-⚠️ **What that does NOT establish.** The mint and the sender co-vary perfectly: the six rows on our
-mint came from `8tJVcM2JehYkyPLHUZ3rxNvhfADaQdHx7xaJw6kS6ux8` and the five on Circle's from
-`4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P` — the new `Deposited` row included, which is the fifth.
-With eleven rows and that confounding, the data still do **not** separate "the mint is the problem" from
-"which client build made the deposit is the problem". What *is* measured is that the beneficiary cannot
-explain it: it is byte for byte the same in all eleven rows, including the three that were paid. One
-deposit from the first sender on Circle's mint, or the reverse, would separate them; none exists.
+⚠️ **What that does NOT establish.** The mint and the sender co-vary perfectly, and re-measuring on
+2026-08-15 did not break the tie: the six rows on our mint all came from
+`8tJVcM2JehYkyPLHUZ3rxNvhfADaQdHx7xaJw6kS6ux8` and the four on Circle's all from
+`4AvAjtPg1aPwJQRvjnY1U9BHbC46rwVc5BY6FuhqUA7P`, the `Deposited` one included. With ten rows and that
+confounding, the data still do **not** separate "the mint is the problem" from "which client build
+made the deposit is the problem". What *is* measured is that the beneficiary cannot explain it: it is
+byte for byte the same in all ten rows, including the four that were paid. One deposit from the first
+sender on Circle's mint, or the reverse, would separate them; none exists.
 
 That distinction matters because [Known limitations](#known-limitations) names a mint's freeze
 authority as the only path to permanent entrapment we know of. Our test mint has no freeze authority
 to use; Circle's devnet mint has one and it is not ours. Every balance this program has custodied has
-been on that mint, so that limitation has covered 100% of it — **including the 5,000,000 raw that was
-still custodied when this paragraph was first written, and which was refunded on 2026-08-10 in slot
-`482823756`.** What it costs today is still zero in value: devnet, faucet balances, and no vault has
-been frozen (`state: initialized` on both vaults of the day, read 2026-08-05; no vault's own state is
-asserted here — `scripts/list-live-escrows.py` reports the *beneficiary's* account state, not the
-vault's). The exposure is real in kind, and it stopped being hypothetical with a deposit this
-repository did not make — which is the point: it returns with the next deposit, not with an edit to
-this file, and the fact that nothing is custodied at this moment is not a property of the program.
+been on that mint, so that limitation has covered 100% of it, **including the 13,500,000 raw it is
+custodying as this is written**: read 2026-08-15, the vault of `Hr2Qt6qq…` is
+`7piawXnHaDQih6vV54uNjunWVunqhFJXBW5QjrG5hgwF` and it holds that amount of Circle's devnet USDC.
+What it costs is still zero in value: devnet, faucet balances. That vault is **not** frozen
+(`state: initialized`, read directly with `getTokenAccountsByOwner` on the escrow PDA; note that
+`scripts/list-live-escrows.py` reports the *beneficiary's* account state, not the vault's, so the
+script alone does not answer this). The exposure is real in kind, and it stopped being hypothetical
+with a deposit this repository did not make. That is the point: it returns with the next deposit, not
+with an edit to this file, and whether anything is custodied at a given moment is a reading of the
+chain, never a property of the program.
 
 Both facts are one command each:
 
@@ -929,16 +955,22 @@ The host pin and the compiler that produces `escrow.so` are two different things
 them can change the artifact. Measured on 2026-08-06 rather than assumed: with
 `target/sbpf-solana-solana` deleted, `anchor build` was run twice, once with
 `channel = "1.89.0"` and once with `channel = "stable"` (rustc 1.97.1). Both runs produced
-`escrow.so` with `sha256` `10d6dd04...` and `verify-hash` `455e4e36...`, the value devnet holds.
+`escrow.so` with `sha256` `10d6dd04...` and `verify-hash` `455e4e36...`, which was the value devnet
+held at that time, before the 2026-08-10 deploy. What the experiment shows is the equality between
+the two runs, and that does not expire; the hash does, and it did.
 So a `rust-toolchain.toml` that disagrees with this table does **not** break the reproduction. It
 breaks the MSRV check: 1.89.0 is what makes `rust-version = "1.89.0"` in `Cargo.toml` a claim
 clippy actually compiles, and a newer channel can also fail `-D warnings` on lints that did not
 exist in 1.89.0.
 
 What does break the reproduction is `[workspace.metadata.cli] solana`, because it picks the
-platform-tools that emit the bytes. `README.md:196` is the same fact seen from the artifact: the
-only absolute paths embedded in `escrow.so` come from `platform-tools/.../out/rust/library/`,
-never from the host toolchain directory.
+platform-tools that emit the bytes. The row *The binary carries no path from that machine*, under
+[What we have and have not confirmed](#what-we-have-and-have-not-confirmed), is the same fact seen
+from the artifact: the only absolute paths embedded in `escrow.so` come from
+`platform-tools/.../out/rust/library/`, never from the host toolchain directory. (That pointer was
+written as `README.md:196`, a line number into this same file, and by 2026-08-15 it landed three
+paragraphs away. A citation into the document that contains it breaks every time the document is
+edited, so it is named by section here instead.)
 
 ## Continuous integration
 
@@ -946,8 +978,13 @@ Two workflows, neither of which deploys anything.
 
 | Workflow | What it does | State |
 |----------|--------------|-------|
-| `.github/workflows/ci.yml` | clippy with `-D warnings`, `anchor build`, the whole test suite | **green** |
-| `.github/workflows/verified-build.yml` | rebuilds in the pinned container and compares the result against the program on devnet | **green**, and see the caveat below about what it is claiming right now |
+| `.github/workflows/ci.yml` | clippy with `-D warnings`, `anchor build`, the whole test suite | **green** on `ce382a8`, the newest commit on `main` when this was read (2026-08-15) |
+| `.github/workflows/verified-build.yml` | rebuilds in the pinned container and compares the result against the program on devnet | **green** on the same commit, both jobs, and see the caveat below about what it is claiming |
+
+A colour written into a file is a claim about a commit, and this file cannot know the newest one. Both
+cells above were read with `gh run list --limit 8 --json displayTitle,conclusion,headSha,name`, which
+is one command and answers for whatever is on `main` when you run it. The badge, when there is one, is
+the live version of the same answer.
 
 ### `verified-build.yml`
 
@@ -997,8 +1034,12 @@ differing from this file). All eight behaved as expected. That exercise predates
 middle row, so the injected-failure sweep has not been repeated against its new form. What has run
 against the new form is the real thing, and it passed.
 
-**The byte-for-byte claim was green for the 2026-08-01 binary, and is pending for the one deployed
-on 2026-08-05.** [Run 30713836991](https://github.com/ferrosasfp/solana-programs/actions/runs/30713836991),
+**The byte-for-byte claim is green for the binary deployed on 2026-08-10, the one running today.**
+That is [run 31730137583](https://github.com/ferrosasfp/solana-programs/actions/runs/31730137583) on
+commit `ce382a8`, whose `reproducible-build` job concluded `success` with `EXPECTED_VERIFY_HASH`
+pinned to `2bd31779…` and `SOURCE_REPRODUCES_CHAIN=true`, so all three assertions ran. Its log had
+expired by 2026-08-15, so what is quoted below is the older run, whose output is on record.
+[Run 30713836991](https://github.com/ferrosasfp/solana-programs/actions/runs/30713836991),
 the first one after the 2026-08-01 deploy, printed:
 
 ```
@@ -1011,11 +1052,13 @@ ok   rebuilt artifact == the program deployed on devnet
 
 Three checks, all with `SOURCE_REPRODUCES_CHAIN=true`, so none of them was skipped by the flag.
 
-For the WKH-326 binary the same three assertions are what the push carrying `455e4e36...` has to
-turn green. What already ran locally before that push is the cheap half: `onchain-hash.py` with the
-new pins exits 0, and `solana-verify get-executable-hash` on the local artifact prints the same
-`455e4e36...` that `get-program-hash` reads off devnet. The part only the runner can add is that a
-rebuild in the pinned container, on a machine that is not the one that deployed, lands on it too.
+The same three assertions are what every later deploy has to turn green, and they did for WKH-326
+(`455e4e36...`) and for WKH-343 (`2bd31779...`). The cheap half can be run without a runner and
+without Docker: `python3 scripts/onchain-hash.py` exits 0 against the pins, and
+`sha256` of `target/deploy/escrow.so` with its trailing zeros stripped equals what
+`get-program-hash` reads off devnet (measured again on 2026-08-15: both are `2bd31779...`). The part
+only the runner adds is that a rebuild in the pinned container, on a machine that is not the one that
+deployed, lands on it too.
 
 ### `ci.yml`
 
@@ -1134,8 +1177,11 @@ That account was sized when the program was first deployed and **does not grow b
 | This tree's `escrow.so`, on 2026-08-01 | 271,136 | 271,136 |
 | | **8,568 missing** | **141,432 of headroom** |
 
-The artifact has grown since: the binary deployed on 2026-08-05 is 274,800 bytes, so the headroom
-is 137,768 today. The preflight is what measures it, not this table.
+The artifact has grown since. The binary deployed on 2026-08-10 is 276,800 bytes, so the headroom is
+**135,768** (412,568 − 276,800), measured 2026-08-15. This line said 137,768, which was the headroom
+against the 274,800 byte binary of 2026-08-05: the sentence stayed still while the artifact grew,
+which is the failure mode the next sentence is about. The preflight is what measures it, not this
+table.
 
 Without the extend, the deploy fails inside the loader with a message that never mentions the size,
 after uploading the whole binary, and leaves a buffer account holding your SOL. So the deploy script
@@ -1184,19 +1230,25 @@ list. It still does not match the old program's list, which has six accounts and
 What made it tolerable was a fact rather than a promise, and **on 2026-08-10 that fact expired.**
 Until then no consumer built `close` at all, so the mismatch was a forward constraint on whoever
 wrote the first one and not a live cut. There is now a consumer: `chaski-v3` builds `close` with
-both accounts (`src/infrastructure/solana-wallet.ts:911`, `senderAta` derived at `:901`,
-`escrowIndex` chosen by an explicit ternary at `:925`), and **six `close` transactions confirmed on
+both accounts (`src/infrastructure/solana-wallet.ts`: the `.close(...)` call at `:1220`, `senderAta`
+derived at `:1210`, `escrowIndex` chosen by an explicit ternary at `:1234`, all three read on
+2026-08-15 against `chaski-v3` `40f0b68`; they were published as `:911`, `:901` and `:925`, roughly
+300 lines adrift, because that file grew and this one did not notice), and **six `close` transactions confirmed on
 devnet that day**, taking this program's `EscrowState` accounts from 12 to 6 and returning 0.024012
 SOL of rent to the sender. So the conditional above is now the live rule: any further change to this
 account list has to release the client and the program together, with the escrow lifecycle drained in
 between.
 
-⚠️ The `///` doc comment on `sender_ata` in `Close` still carries the expired sentence
-(*"Hoy ningún consumidor construye `close`"*), and it is left there on purpose. Anchor copies doc
-comments into the IDL, so editing it moves the canonical sha256 and costs a republish on chain plus a
-re-pin in both consumers; and the usual workaround, a `//` correction next to it, would shift every
-line number below it in a file this repo cites by line from three other places. It is listed with the
-other wrong doc comments in [Status, honestly](#status-honestly), and this section is the correction.
+✅ The `///` doc comment on `sender_ata` in `Close` used to carry the expired sentence
+(*"Hoy ningún consumidor construye `close`"*), and this paragraph used to say it was being left there
+on purpose. **It is not there any more.** Measured 2026-08-15 on `target/idl/escrow.json`, the file
+that hashes to the published canonical value: that account's `docs` now describe the program's own
+contract (the account is mandatory, `close` sweeps the entire vault balance into it, and the account
+list has no safe deployment order) and end by saying that who builds the instruction is a fact of the
+consumer repositories. Since the tree's IDL, the on-chain IDL and both consumers' copies all
+canonicalise to the same `cc276126…` over 16,020 bytes, that corrected text is what is published on
+chain too. The phrase survives only as a `//` note at `lib.rs:416`, which reaches neither the IDL nor
+the binary.
 
 Checked again on 2026-08-01, before the deploy, by grepping both consumers. `chaski-v3` carries
 `close` in its vendored IDL and never invokes it; `wasiai-facilitator` signs `release` and reads
@@ -1205,7 +1257,8 @@ was safe for everything else: consumers first, program second.
 
 Re-grepped on 2026-08-05 over the four consumer repos for anything that builds this instruction:
 still zero. The only hit outside vendored IDLs is
-`chaski-v3/src/infrastructure/settlement/solana-deposit-beneficiary.test.ts:123`, which reads
+`chaski-v3/src/infrastructure/settlement/solana-deposit-beneficiary.test.ts:135` (published as
+`:123`; re-read 2026-08-15 against `chaski-v3` `40f0b68`), which reads
 `close`'s **discriminator** from the vendored IDL to build a transaction that is deliberately not a
 deposit. Anchor derives that discriminator from the instruction **name**, not from its account list,
 so adding an account does not move it and that test is unaffected.
