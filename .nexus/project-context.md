@@ -93,8 +93,14 @@ porque un número de línea se desplaza cuando alguien edita tres líneas más a
    `python3 -c "print('clamped' in open('target/idl/escrow.json').read())"`. Lo que **sí** viaja es un
    `///` sobre un handler de instrucción o sobre una cuenta dentro de un `#[derive(Accounts)]`, y ése
    es el único caso que cuesta republicar el IDL y re-pinnearlo en los dos consumidores. Quedan **dos**
-   comentarios falsos, los dos fuera del IDL, así que corregirlos no mueve ningún hash; el tercero (el
-   `///` de `sender_ata` en `Close`) ya está corregido y publicado en cadena.
+   comentarios falsos, los dos fuera del IDL, así que corregirlos no mueve el hash canónico; el tercero
+   (el `///` de `sender_ata` en `Close`) ya está corregido y publicado en cadena.
+   ⚠️ **Pero sí puede mover el BINARIO, y es un costo aparte que este repo ya midió.** El `.so` lleva
+   adentro los números de línea de las constraints, así que un comentario que agrega o saca líneas los
+   corre: `doc/mutation-run.md` registra 19 líneas `//` agregadas moviendo `target/deploy/escrow.so` de
+   md5 `b024cd91…` a `1ee62827…` con el IDL byte por byte idéntico. Una edición **línea-neutra** (las
+   mismas líneas que salen entran) no toca el binario, y por eso la corrección del `sender_ata` se
+   escribió 5 por 5.
 3. **Los códigos de `ErrorCode` son posicionales desde 6000.** Insertar una variante en el medio
    renumera todo lo que sigue y rompe cualquier cliente que mapee códigos
    (`programs/escrow/src/lib.rs:487-488` y la enum entera debajo). Se apendiza al final, siempre.
