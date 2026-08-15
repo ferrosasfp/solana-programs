@@ -95,15 +95,17 @@ public and none of it is a secret we are keeping.
   program has held Circle's devnet USDC (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`),
   whose mint authority (`GrNg1XM2...`) and **freeze authority**
   (`CJtyoKSLrktozQzjERTiK3btQtiTK3nN4QrqGHLidyCT`) are **not ours** — measured
-  2026-08-10 at slot `482578725`. **When this program last custodied a balance,
-  that limitation covered 100% of it.** (It used to say "100% of the balance this
-  program custodied *on that mint*", which with that qualifier says nothing at all
-  — of course the mint's own freeze authority covers the balance held in that
-  mint. In a document read by whoever is about to report a vulnerability, a "100%"
-  that is a tautology invites the strong reading, and the strong reading would be
-  false. The claim above is the falsifiable one, and it is true: the last balance
-  under custody, the 40,000,000 raw refunded on 2026-08-10, was entirely on
-  Circle's mint.) It matters for a finder: a freeze authority we do not
+  2026-08-10 at slot `482578725` and again 2026-08-15 at slot `484158416`.
+  **This program is custodying a balance right now, and 100% of it is on that
+  mint.** Read 2026-08-15: the escrow `Hr2Qt6qqJMrFg3bAboDzZzh8kd1ESgzJpUpZTBjnS6H8`
+  is `Deposited` and its vault holds 13,500,000 raw of Circle's devnet USDC. Its
+  deadline (`2026-08-15 10:36:06Z`) has passed, so `release` reverts with
+  `ReleaseWindowClosed` and the only exit left is the sender's `refund`. **This
+  bullet used to be written in the past tense** — "when this program *last*
+  custodied a balance" — and that tense went wrong on its own, with nobody editing
+  the file, which is worth knowing before you test anything: re-read the chain,
+  do not trust this sentence. `python3 scripts/list-live-escrows.py --url devnet`
+  answers it in one command and stamps the slot it read. It matters for a finder: a freeze authority we do not
   hold can freeze a vault, and a frozen SPL token account rejects every transfer,
   so neither `release` nor `refund` can move a token regardless of deadline,
   signature or state. That is a real custody limitation, not a hypothetical.
@@ -155,6 +157,13 @@ It is emitted by the `security_txt!` block at the top of
   this program is built for SBF (ELF machine `0x107`). Tools that scan for the
   `=======BEGIN SECURITY.TXT V1=======` marker, which is what the reference parser
   does, find it either way.
-- The blob is only in a build of this source. **The currently deployed devnet
-  binary predates it**, so the commands above return nothing until the program is
-  upgraded. Email still works.
+- **This bullet used to say the deployed binary predated the blob and that "the
+  commands above return nothing until the program is upgraded". That is false, and
+  it was false in the file a finder reads before deciding how to reach us.**
+  Measured 2026-08-15 by downloading the ProgramData account of
+  `DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x` over RPC and searching the
+  payload: the `=======BEGIN SECURITY.TXT V1=======` marker is at offset 237984 of
+  the dump, and the block is complete, with `contacts email:fernando@wasiai.io`,
+  the policy URL, the source repository and `auditors None`. The commands above
+  work today. The offset moves with every build, so grep for the marker instead of
+  seeking to the number. Email works either way.
