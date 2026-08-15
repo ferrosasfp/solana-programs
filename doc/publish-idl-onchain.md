@@ -4,18 +4,26 @@ Right now the explorer shows this program as raw bytes. Publishing the IDL is wh
 `Unknown instruction` into `deposit`, `release`, `refund` with named accounts and decoded
 arguments, for anybody looking at a transaction without cloning the repository.
 
-**Executed on 2026-08-01, and again on 2026-08-05 after the WKH-326 deploy.** The IDL is published.
-`anchor idl fetch` returns it, its canonical sha256 is
-`bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, and that is the value pinned in
-`chaski-v3` and `wasiai-facilitator`. The number it replaced, `fb64c937...`, is the 2026-08-01 one and
-appears below wherever this document describes that first publication.
+**Executed on 2026-08-01, again on 2026-08-05 after the WKH-326 deploy, and again on 2026-08-11 after
+the WKH-343 one.** The IDL is published. `anchor idl fetch` returns it, and its canonical sha256 is
+`cc2761266dcf8335a17562129de040805f37f69cfe654f5be472045ba7bfcd51` over 16,020 bytes.
 
-⚠️ **What that hash is NOT: what this tree builds.** It was, until WKH-343 added an account to
-`deposit`. This sentence used to say "the same value this repository builds", which contradicted the
-row further down in this same document that says it is **no longer** the same value — one file with two
-answers to "which hash do I pin". The hash this tree builds lives in exactly one place,
-`doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md`, and is deliberately not
-repeated here.
+⚠️ **Until 2026-08-15 this document said that value was `bfbdfe5a…`, that both consumers pinned it,
+that republishing "has not been done" and that the tree built something different. All four were
+false, and the cause is the one this repository keeps running into: the chain moved and nobody edited
+the file.** Measured 2026-08-15, four artefacts read one by one:
+
+| Artefacto | Cómo se midió | Resultado |
+|---|---|---|
+| la cadena | `getAccountInfo` de `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC`, zlib inflado desde el offset 96 | `cc276126…`, 16.020 bytes |
+| este árbol | `target/idl/escrow.json` canonicalizado | `cc276126…`, 16.020 bytes |
+| `wasiai-facilitator` | `ESCROW_IDL_SHA256`, `src/chains/escrow-idl.hash.test.ts:53` | `cc276126…` |
+| `chaski-v3` | `ESCROW_IDL_SHA256`, `contracts/idl/escrow-idl.hash.test.ts:50` | `cc276126…` |
+
+The values it replaced, in order: `fb64c937…` (2026-08-01), `bfbdfe5a…` (2026-08-05) and
+`d295b7c7…` (published between 2026-08-10 and 2026-08-11). None of the three is pinned by anything
+today; they are kept so the movement can be audited. Wherever this document describes an earlier
+publication below, it is describing that moment, not today.
 
 **The command in this document does not work, and the way it fails is worth knowing.** See
 [What actually worked](#what-actually-worked) at the end. The rest of the document is kept as it was
@@ -54,20 +62,24 @@ not exist. It does exist. Every row below is a measurement with its slot, not a 
 | | |
 |---|---|
 | Canonical IDL account | `7tbJDv1gwseQamg816gEgwTSpsPpgec5yxhYpbTrcdbC` |
-| Exists? | **Yes**, measured at slot `482579471`: owner `ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S`, 5292 bytes. It was published on 2026-07-28 and republished on 2026-08-05 right after the WKH-326 program deploy. |
+| Exists? | **Yes**, measured at slot `482579471`: owner `ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S`, 5292 bytes. It was published on 2026-07-28, republished on 2026-08-05 right after the WKH-326 program deploy, and republished again on 2026-08-11 after the WKH-343 one, which is the content it serves today. |
 | Derivation | PDA of `ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S`, seeds `[program_id, "", "idl" padded to 16 bytes]`, bump 253 |
 | IDL to upload | `target/idl/escrow.json`, produced by `anchor build` |
-| Canonical sha256 of what is **on chain** | `bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922` — this is also the value both consumers pin. The row previously published `fb64c937…`, which was superseded on 2026-08-05 and had been left behind here. |
-| Canonical sha256 of what **this tree builds** | **No longer the same value**, and deliberately not repeated here. This tree carries WKH-343, which adds one account to `deposit`, so `anchor build` produces a different IDL. The new hash is recorded in `doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md`, in exactly one place, and is **not** re-pinned in any consumer from here. |
+| Canonical sha256 of what is **on chain** | `cc2761266dcf8335a17562129de040805f37f69cfe654f5be472045ba7bfcd51`, over 16,020 bytes, and this is also the value both consumers pin. Read 2026-08-15 off the account itself, not off any file. This row has now been wrong twice with two different values (`fb64c937…`, then `bfbdfe5a…`), both times because a republication happened and the row did not move. |
+| Canonical sha256 of what **this tree builds** | **The same value**, `cc276126…`: `target/idl/escrow.json` canonicalised gives 16,020 bytes and that hash. The divergence this row used to describe was real while WKH-343 was undeployed and ended when the program was deployed (2026-08-10) and the IDL republished (2026-08-11). |
 
 The address and the bump were recomputed from the derivation and match what `anchor idl fetch`
 looked up, so the account above is the one the tooling will read.
 
-⚠️ **Republishing the IDL is not part of WKH-343 and has not been done.** The account still serves the
-IDL of the binary that is actually deployed, which is the correct state while the program change is
-undeployed: an on-chain IDL describing a binary that is not running would be worse than a stale one.
-Republication belongs to the deploy step, whose gate is in
-`doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/runbook-deploy.md`.
+✅ **The WKH-343 republication has been done**: the program was deployed on 2026-08-10 (slot
+`482775110`) and the IDL was republished on 2026-08-11, so the account serves the IDL of the binary
+that is actually running. This paragraph used to say the opposite ("is not part of WKH-343 and has not
+been done"), and it stayed that way for four days after the fact, because nothing in this repository
+compares this file against the chain. The gate it points at,
+`doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/runbook-deploy.md`, records the same
+correction on its own header. ⚠️ That republication is also the one that cost several hours of outage,
+caused by `scripts/publish-idl.sh` opening with an unconditional `close idl`; the story is in the
+"On-chain IDL" row of the README.
 
 ## The command
 
@@ -142,12 +154,15 @@ The sequence:
 2. update the hashes and `SOURCE_REPRODUCES_CHAIN` in `.github/workflows/verified-build.yml` and
    the README
 3. publish the IDL with the command above
-4. re-pin the IDL hash in the two consumers, which is a separate and already pending piece of work:
+4. re-pin the IDL hash in the two consumers, each in its own repository:
    `chaski-v3/contracts/idl/escrow-idl.hash.test.ts` and
    `wasiai-facilitator/src/chains/escrow-idl.hash.test.ts`
 
-Step 4 is owed regardless of whether the IDL is published on chain: the custody window already
-changed the IDL, so the vendored copies in both consumers are stale as of today.
+Step 4 is owed regardless of whether the IDL is published on chain, because the vendored copies are
+what the consumers actually load. ⚠️ This paragraph used to end "the vendored copies in both consumers
+are stale **as of today**", and "today" was 2026-08-01. Measured 2026-08-15: neither is stale, both
+pin `cc276126…`. A sentence with "today" in it and no date is a claim that cannot be checked without
+guessing when it was written.
 
 **All four ran on 2026-08-01, in that order.** Step 4 ran first in practice, because the consumers
 had to ship before the program did for an unrelated reason (see the README section on what the
@@ -157,13 +172,13 @@ consumers needed). Both pinned `fb64c937...` at that point.
 program went to devnet in slot `481495859`, the two binary hashes and `SOURCE_REPRODUCES_CHAIN`
 were updated in the workflow and the README, the IDL was republished through the buffer path (step
 3 still fails the documented way), and the two consumers were re-pinned last, `chaski-v3` at
-`bd85dfa` and `wasiai-facilitator` at `f9bddce`. Both now pin
+`bd85dfa` and `wasiai-facilitator` at `f9bddce`. At that moment both pinned
 `bfbdfe5aedd55d68e6dda4663b5d26daada815c99db03df34a1601fe4a4d3922`, which is what `anchor idl fetch`
-returns. ⚠️ It is **no longer** what `anchor build` produces in this tree — WKH-343 moved that value,
-and it is recorded only in
-`doc/sdd/004-wkh-343-deposito-destinatario-sin-cuenta-token/idl-hash.md`. This paragraph describes the
-2026-08-05 run, and at that moment the two coincided; the sentence is kept in the past tense on
-purpose, because the re-pin of each consumer is that repo's decision and has not happened.
+returned then. ⚠️ **That is history, not state.** The same four steps ran again for WKH-343: program
+deployed 2026-08-10, IDL republished 2026-08-11, and both consumers re-pinned, each by its own repo's
+decision. Measured 2026-08-15, the chain, this tree and both consumers all carry `cc276126…`. The
+sentence that used to close this paragraph, "the re-pin of each consumer ... has not happened", is
+exactly the kind of claim about another repository that goes false without anybody editing this one.
 
 ## What actually worked
 
@@ -196,8 +211,13 @@ npx --yes --package=@solana-program/program-metadata@0.5.1 -- program-metadata \
   create-buffer target/idl/escrow.json
 # -> buffer: <BUFFER_ADDRESS>
 
-# 2. if a half written metadata account already exists, close it. `create` will not overwrite,
-#    and `write`/`update` fail against it exactly as above.
+# 2. ⚠️ ONLY if a half written metadata account already exists. `close` DESTROYS the published copy,
+#    and running it unconditionally is what caused several hours of outage on 2026-08-11: the
+#    justification written next to it, that the tool "does not overwrite", was a conjecture and is
+#    false (`write` is create-or-update, and `update` exists). Verify the account is really unreadable
+#    before closing it, and check that you have a replacement in hand. `scripts/publish-idl.sh` is the
+#    version of this runbook that got the lesson: measured 2026-08-15, the string `close` does not
+#    appear in it at all.
 npx --yes --package=@solana-program/program-metadata@0.5.1 -- program-metadata \
   --rpc https://api.devnet.solana.com --keypair "$KEY" \
   close idl DR5GoMT7sAKzD6wZMKJPeknS3Y6fzgZUNevi7xiESE4x
